@@ -211,7 +211,7 @@ async def monitor_loop(app):
         
         await asyncio.sleep(3)
 
-# Bot Commands Handlers
+# Bot Commands & Message Handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_text = (
@@ -225,6 +225,68 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("💬 SUPPORT")]
     ], resize_keyboard=True)
     await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=keyboard)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user = update.effective_user
+    uid = user.id
+
+    if text == "📞 GET NUMBER":
+        msg = await update.message.reply_text("⏳ <i>Fetching number from server...</i>", parse_mode="HTML")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{PRIMARY_BASE_URL}/publicapi/getnum", headers=PRIMARY_HEADERS, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    number = data.get("data", {}).get("number") or data.get("number")
+                    
+                    if number:
+                        clean_num = normalize_number(number)
+                        active_numbers[clean_num] = {"uid": uid, "time": time.time()}
+                        
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("❌ Cancel / Release", callback_data=f"cancel_{clean_num}")]
+                        ])
+                        
+                        await msg.edit_text(
+                            f"📱 <b>YOUR NUMBER IS READY!</b>\n\n"
+                            f"<b>Number:</b> <code>+{clean_num}</code>\n"
+                            f"<b>Status:</b> Waiting for SMS...\n\n"
+                            f"<i>Please use this number to receive OTP.</i>",
+                            parse_mode="HTML",
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await msg.edit_text("❌ Currently no numbers available. Please try again later.")
+                else:
+                    await msg.edit_text("❌ Server Error: Unable to fetch number.")
+        except Exception as e:
+            logger.error(f"Get Number Exception: {e}")
+            await msg.edit_text("❌ An error occurred while contacting the server.")
+
+    elif text == "💰 BALANCE":
+        data = load_data(USER_DATA_FILE)
+        bal = data.get(str(uid), {}).get("balance", 0.0)
+        await update.message.reply_text(f"💰 <b>Your Current Balance:</b> <code>{bal:.2f} BDT</code>", parse_mode="HTML")
+
+    elif text == "💬 SUPPORT":
+        await update.message.reply_text(f"📩 For support, contact developer: {SUPPORT_LINK}")
+
+    elif text == "🌐 RANGE" or text == "📊 TRAFFIC":
+        await update.message.reply_text("ℹ️ Feature updating soon.")
+
+# Callback Query Handler for Inline Buttons
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("cancel_"):
+        num = query.data.split("_")[1]
+        if num in active_numbers:
+            del active_numbers[num]
+            await query.edit_message_text(f"❌ Number <code>+{num}</code> released successfully.", parse_mode="HTML")
+        else:
+            await query.edit_message_text("⚠️ Number is no longer active.")
 
 # Flask Server Setup
 app_flask = Flask(__name__)
@@ -241,7 +303,10 @@ def main():
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # Handlers Registration
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Start Monitor in background
     loop = asyncio.get_event_loop()
