@@ -48,6 +48,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
 
 # বাটন ক্লিক হ্যান্ডলার
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+
+ADMIN_ID = 123456789  # আপনার টেলিগ্রাম ইউজার আইডি
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # আপনার বট টোকেন
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📱 নম্বর কিনুন (Buy Number)", callback_data='buy_number'),
+            InlineKeyboardButton("👤 আমার অ্যাকাউন্ট (Account)", callback_data='account')
+        ],
+        [
+            InlineKeyboardButton("💳 ব্যালেন্স রিচার্জ (Recharge)", callback_data='recharge'),
+            InlineKeyboardButton("📩 ইতিহাস (History)", callback_data='history')
+        ],
+        [
+            InlineKeyboardButton("🌐 ZebraSMS ওয়েবসাইট", url='https://zebrasms.com/')
+        ]
+    ]
+
+    if user.id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("⚙️ অ্যাডমিন প্যানেল", callback_data='admin_panel')])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    welcome_text = (
+        f"স্বাগতম {user.first_name}! 👋\n\n"
+        "ZebraSMS বটের মাধ্যমে সরাসরি ভার্চুয়াল নম্বর পেতে নিচের বাটনগুলো ব্যবহার করুন।"
+    )
+
+    if update.message:
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -61,6 +105,28 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='main_menu')]
         ]
         await query.edit_message_text("কোন সার্ভিসের নম্বর নিতে চান নির্বাচন করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # --- সার্ভিস বাটনগুলোর হ্যান্ডলার ---
+    elif data in ['buy_wa', 'buy_tg', 'buy_fb', 'buy_gmail']:
+        service_names = {
+            'buy_wa': 'WhatsApp',
+            'buy_tg': 'Telegram',
+            'buy_fb': 'Facebook',
+            'buy_gmail': 'Gmail'
+        }
+        selected_service = service_names.get(data)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 নম্বর পান (Get Number)", callback_data=f'confirm_{data}')],
+            [InlineKeyboardButton("🔙 ব্যাকে যান", callback_data='buy_number')]
+        ]
+        
+        await query.edit_message_text(
+            f"আপনি **{selected_service}** এর জন্য নম্বর ক্রয়ের সেকশনে আছেন।\n\n"
+            f"মূল্য: ৳৫০ (উদাহরণ)\nস্টক: এভেইলএবল",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     elif data == 'account':
         acc_text = (
