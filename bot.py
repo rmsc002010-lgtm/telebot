@@ -1,174 +1,191 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes
+)
 
-# অ্যাডমিন আইডি (আপনার টেলিগ্রাম ইউজার আইডি দিয়ে পরিবর্তন করুন)
+# ================== কনফিগারেশন ==================
+# ১. আপনার বট টোকেন বসান (BotFather থেকে পাওয়া)
+BOT_TOKEN = "8782800246:AAHJ-i7-umPomE7FBJsEK8G8d5ySfqg_0FM" 
+
+# ২. আপনার টেলিগ্রাম নিউমেরিক ইউজার আইডি বসান
 ADMIN_ID = 1586853120 
 
-# আপনার টেলিগ্রাম বট টোকেন দিন
-BOT_TOKEN = "8782800246:AAHJ-i7-umPomE7FBJsEK8G8d5ySfqg_0FM"
+# ৩. আপনার টেলিগ্রাম ইউজারনেম বসান (@ ছাড়া)
+ADMIN_USERNAME = "akikshahrin" 
+# =================================================
 
+# লগিং সেটআপ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# /start কমান্ড হ্যান্ডলার
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    
+# মূল বাটন মেনু তৈরি করার ফাংশন
+def get_main_keyboard(user_id: int):
     keyboard = [
         [
-            InlineKeyboardButton("📱 নম্বর কিনুন (Buy Number)", callback_data='buy_number'),
-            InlineKeyboardButton("👤 আমার অ্যাকাউন্ট (Account)", callback_data='account')
+            InlineKeyboardButton("📱 নম্বর কিনুন (Buy Number)", callback_data='btn_buy_number'),
+            InlineKeyboardButton("👤 আমার অ্যাকাউন্ট (Account)", callback_data='btn_account')
         ],
         [
-            InlineKeyboardButton("💳 ব্যালেন্স রিচার্জ (Recharge)", callback_data='recharge'),
-            InlineKeyboardButton("📩 ইতিহাস (History)", callback_data='history')
+            InlineKeyboardButton("💳 ব্যালেন্স রিচার্জ (Recharge)", callback_data='btn_recharge'),
+            InlineKeyboardButton("📩 ইতিহাস (History)", callback_data='btn_history')
         ],
         [
             InlineKeyboardButton("🌐 ZebraSMS ওয়েবসাইট", url='https://zebrasms.com/')
         ]
     ]
 
-    # ইউজার যদি অ্যাডমিন হন, তবে অ্যাডমিন প্যানেল বাটন যুক্ত হবে
-    if user.id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("⚙️ অ্যাডমিন প্যানেল", callback_data='admin_panel')])
+    # অ্যাডমিন হলে অ্যাডমিন প্যানেল যুক্ত হবে
+    if user_id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("⚙️ অ্যাডমিন প্যানেল", callback_data='btn_admin_panel')])
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    welcome_text = (
-        f"স্বাগতম {user.first_name}! 👋\n\n"
-        "ZebraSMS বটের মাধ্যমে সরাসরি ভার্চুয়াল নম্বর পেতে নিচের বাটনগুলো ব্যবহার করুন।"
-    )
+    return InlineKeyboardMarkup(keyboard)
 
-    if update.message:
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
-
-# বাটন ক্লিক হ্যান্ডলার
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-
-ADMIN_ID = 123456789  # আপনার টেলিগ্রাম ইউজার আইডি
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # আপনার বট টোকেন
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /start কমান্ড
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("📱 নম্বর কিনুন (Buy Number)", callback_data='buy_number'),
-            InlineKeyboardButton("👤 আমার অ্যাকাউন্ট (Account)", callback_data='account')
-        ],
-        [
-            InlineKeyboardButton("💳 ব্যালেন্স রিচার্জ (Recharge)", callback_data='recharge'),
-            InlineKeyboardButton("📩 ইতিহাস (History)", callback_data='history')
-        ],
-        [
-            InlineKeyboardButton("🌐 ZebraSMS ওয়েবসাইট", url='https://zebrasms.com/')
-        ]
-    ]
-
-    if user.id == ADMIN_ID:
-        keyboard.append([InlineKeyboardButton("⚙️ অ্যাডমিন প্যানেল", callback_data='admin_panel')])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     welcome_text = (
         f"স্বাগতম {user.first_name}! 👋\n\n"
         "ZebraSMS বটের মাধ্যমে সরাসরি ভার্চুয়াল নম্বর পেতে নিচের বাটনগুলো ব্যবহার করুন।"
     )
+    await update.message.reply_text(welcome_text, reply_markup=get_main_keyboard(user.id))
 
-    if update.message:
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup)
-
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# সকল বাটন ক্লিক হ্যান্ডলার
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    
+    # টেলিগ্রাম ক্লায়েন্টকে নিশ্চিত করা যে বাটনে ক্লিক লেগেছে
     await query.answer()
 
     data = query.data
+    user_id = query.from_user.id
 
-    if data == 'buy_number':
-        keyboard = [
-            [InlineKeyboardButton("WhatsApp", callback_data='buy_wa'), InlineKeyboardButton("Telegram", callback_data='buy_tg')],
-            [InlineKeyboardButton("Facebook", callback_data='buy_fb'), InlineKeyboardButton("Gmail", callback_data='buy_gmail')],
-            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='main_menu')]
-        ]
-        await query.edit_message_text("কোন সার্ভিসের নম্বর নিতে চান নির্বাচন করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+    # ১. প্রধান মেনুতে ফেরা
+    if data == 'btn_main_menu':
+        welcome_text = (
+            f"স্বাগতম {query.from_user.first_name}! 👋\n\n"
+            "ZebraSMS বটের মাধ্যমে সরাসরি ভার্চুয়াল নম্বর পেতে নিচের বাটনগুলো ব্যবহার করুন।"
+        )
+        await query.edit_message_text(welcome_text, reply_markup=get_main_keyboard(user_id))
 
-    # --- সার্ভিস বাটনগুলোর হ্যান্ডলার ---
-    elif data in ['buy_wa', 'buy_tg', 'buy_fb', 'buy_gmail']:
-        service_names = {
-            'buy_wa': 'WhatsApp',
-            'buy_tg': 'Telegram',
-            'buy_fb': 'Facebook',
-            'buy_gmail': 'Gmail'
-        }
-        selected_service = service_names.get(data)
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 নম্বর পান (Get Number)", callback_data=f'confirm_{data}')],
-            [InlineKeyboardButton("🔙 ব্যাকে যান", callback_data='buy_number')]
+    # ২. নম্বর কেনার মেনু
+    elif data == 'btn_buy_number':
+        services_keyboard = [
+            [
+                InlineKeyboardButton("WhatsApp", callback_data='srv_whatsapp'),
+                InlineKeyboardButton("Telegram", callback_data='srv_telegram')
+            ],
+            [
+                InlineKeyboardButton("Facebook", callback_data='srv_facebook'),
+                InlineKeyboardButton("Gmail", callback_data='srv_gmail')
+            ],
+            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='btn_main_menu')]
         ]
-        
         await query.edit_message_text(
-            f"আপনি **{selected_service}** এর জন্য নম্বর ক্রয়ের সেকশনে আছেন।\n\n"
-            f"মূল্য: ৳৫০ (উদাহরণ)\nস্টক: এভেইলএবল",
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "কোন সার্ভিসের নম্বর নিতে চান নির্বাচন করুন:",
+            reply_markup=InlineKeyboardMarkup(services_keyboard)
         )
 
-    elif data == 'account':
-        acc_text = (
-            "👤 **আপনার তথ্য:**\n\n"
-            f"আইডি: `{query.from_user.id}`\n"
-            "ব্যালেন্স: ৳0.00\n"
-            "মোট কেনা নম্বর: 0"
+    # ৩. নির্দিষ্ট সার্ভিস নির্বাচন (WhatsApp, Telegram, Facebook, Gmail)
+    elif data.startswith('srv_'):
+        service_key = data.split('_')[1]
+        service_names = {
+            'whatsapp': 'WhatsApp',
+            'telegram': 'Telegram',
+            'facebook': 'Facebook',
+            'gmail': 'Gmail'
+        }
+        selected_name = service_names.get(service_key, 'Service')
+
+        action_keyboard = [
+            [InlineKeyboardButton("🔄 নম্বর পান (Get Number)", callback_data=f'getnum_{service_key}')],
+            [InlineKeyboardButton("🔙 পেছনে যান", callback_data='btn_buy_number')]
+        ]
+
+        await query.edit_message_text(
+            f"📌 **সার্ভিস:** {selected_name}\n"
+            f"💰 **মূল্য:** ৳৫০ (স্যাম্পল)\n"
+            f"📊 **স্টক:** পর্যাপ্ত নম্বর খালি আছে\n\n"
+            f"নম্বর সংগ্রহ করতে নিচের 'নম্বর পান' বাটনে চাপুন।",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(action_keyboard)
         )
-        keyboard = [[InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='main_menu')]]
+
+    # ৪. নম্বর পাওয়ার কনফার্মেশন ক্লিক
+    elif data.startswith('getnum_'):
+        service_key = data.split('_')[1].upper()
+        
+        back_keyboard = [[InlineKeyboardButton("🔙 নম্বর তালিকায় ফেরত যান", callback_data='btn_buy_number')]]
+        
+        # এখানে পরবর্তীতে ZebraSMS এর API যুক্ত করা হবে
+        await query.edit_message_text(
+            f"⚠️ **পর্যাপ্ত ব্যালেন্স নেই!**\n\n"
+            f"আপনার অ্যাকাউন্টে {service_key} এর নম্বর কেনার জন্য পর্যাপ্ত ব্যালেন্স নেই। অনুগ্রহ করে অ্যাকাউন্ট রিচার্জ করুন।",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(back_keyboard)
+        )
+
+    # ৫. অ্যাকাউন্ট তথ্য
+    elif data == 'btn_account':
+        acc_text = (
+            "👤 **আপনার অ্যাকাউন্ট বিবরণী:**\n\n"
+            f"🆔 **ইউজার আইডি:** `{user_id}`\n"
+            f"💵 **ব্যালেন্স:** ৳0.00\n"
+            f"📦 **মোট ক্রয়কৃত নম্বর:** 0"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='btn_main_menu')]]
         await query.edit_message_text(acc_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data == 'recharge':
+    # ৬. ব্যালেন্স রিচার্জ
+    elif data == 'btn_recharge':
         recharge_text = (
             "💳 **ব্যালেন্স রিচার্জ পদ্ধতি:**\n\n"
-            "বিকাশ/নগদ রকেট নম্বর নিতে অ্যাডমিনের সাথে যোগাযোগ করুন অথবা পেমেন্ট ট্রানজেকশন আইডি পাঠান।"
+            "বিকাশ/নগদ/রকেটের মাধ্যমে ম্যানুয়ালি ব্যালেন্স যোগ করতে অ্যাডমিনের সাথে যোগাযোগ করুন।"
         )
         keyboard = [
-            [InlineKeyboardButton("👨‍💻 অ্যাডমিন যোগাযোগ", url='https://t.me/your_admin_username')],
-            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='main_menu')]
+            [InlineKeyboardButton("👨‍💻 অ্যাডমিন এর সাথে কথা বলুন", url=f'https://t.me/{ADMIN_USERNAME}')],
+            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='btn_main_menu')]
         ]
         await query.edit_message_text(recharge_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data == 'admin_panel':
-        if query.from_user.id != ADMIN_ID:
-            await query.edit_message_text("আপনার এই সেকশনে প্রবেশের অনুমতি নেই।")
+    # ৭. ইতিহাস (History)
+    elif data == 'btn_history':
+        history_text = "📩 **ক্রয়কৃত নম্বরের ইতিহাস:**\n\nআপনার কেনা কোনো সক্রিয় বা পুরোনো নম্বরের ডাটা পাওয়া যায়নি।"
+        keyboard = [[InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='btn_main_menu')]]
+        await query.edit_message_text(history_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # ৮. অ্যাডমিন প্যানেল
+    elif data == 'btn_admin_panel':
+        if user_id != ADMIN_ID:
+            await query.edit_message_text("❌ আপনার এই সেকশনে প্রবেশের অনুমতি নেই।")
             return
         
         admin_keyboard = [
-            [InlineKeyboardButton("➕ ব্যালেন্স যোগ করুন", callback_data='admin_add_balance')],
-            [InlineKeyboardButton("📢 ব্রডকাস্ট মেসেজ", callback_data='admin_broadcast')],
-            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='main_menu')]
+            [InlineKeyboardButton("➕ ইউজার ব্যালেন্স যুক্ত করুন", callback_data='admin_add_bal')],
+            [InlineKeyboardButton("📢 ব্রডকাস্ট নোটিশ", callback_data='admin_broadcast')],
+            [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data='btn_main_menu')]
         ]
-        await query.edit_message_text("⚙️ **অ্যাডমিন কন্ট্রোল প্যানেল**", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(admin_keyboard))
+        await query.edit_message_text("⚙️ **অ্যাডমিন কন্ট্রোল প্যানেল:**", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(admin_keyboard))
 
-    elif data == 'main_menu':
-        await start(update, context)
+    # অ্যাডমিন একশন হ্যান্ডলার স্যাম্পল
+    elif data in ['admin_add_bal', 'admin_broadcast']:
+        keyboard = [[InlineKeyboardButton("🔙 অ্যাডমিন প্যানেল", callback_data='btn_admin_panel')]]
+        await query.edit_message_text("🛠 এই ফিচারটি পরবর্তীতে কমান্ড ইনপুটের মাধ্যমে যুক্ত করা হবে।", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# মেইন রানার
 if __name__ == '__main__':
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_click))
+    # কমান্ড হ্যান্ডলার
+    app.add_handler(CommandHandler("start", start_command))
+    
+    # বাটন ব্যাকএন্ড হ্যান্ডলার
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    print("বট সফলভাবে চালু হয়েছে...")
+    print("বট সফলভাবে চালুর জন্য প্রস্তুত...")
     app.run_polling()
