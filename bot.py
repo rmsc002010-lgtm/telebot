@@ -9,7 +9,7 @@ from telegram.ext import (
 
 # ================== কনফিগারেশন ==================
 # ১. আপনার বট টোকেন বসান (BotFather থেকে পাওয়া)
-BOT_TOKEN = "8782800246:AAHJ-i7-umPomE7FBJsEK8G8d5ySfqg_0FM" 
+BOT_TOKEN = "8782800246:AAEdb0FWpg7x6js3jNKkTPpg9BmE_K1KdwY" 
 
 # ২. আপনার টেলিগ্রাম নিউমেরিক ইউজার আইডি বসান
 ADMIN_ID = 1586853120 
