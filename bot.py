@@ -15,16 +15,16 @@ ADMIN_ID = 1586853120
 
 # ZebraSMS API Config
 ZEBRASMS_API_KEY = "6U3G3DDZ6GB"
+# ZebraSMS standard API Endpoint
 ZEBRASMS_BASE_URL = "https://zebrasms.com/stubs/handler_api.php"
 # =======================================================
 
-# Logging setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
-# ZebraSMS Console-এর আসল লাইভ দেশ ও অপারেটর লিস্ট
+# Live Console Mapping with exact country code & multi-service support
 CONSOLE_RANGE_MAPPING = {
     "1": {
         "label": "🇲🇬 Madagascar - Airtel (+261)",
@@ -46,7 +46,6 @@ CONSOLE_RANGE_MAPPING = {
     }
 }
 
-# ==================== DATABASE SETUP ====================
 def init_db():
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -74,42 +73,48 @@ def get_total_users():
     conn.close()
     return count
 
-# ==================== ZEBRASMS API FUNCTIONS ====================
+# ==================== ZEBRASMS API ====================
 
 def api_get_number(country_code, service_code):
-    """ZebraSMS API থেকে নম্বর জেনারেট করার ফন্কশন"""
-    params = {
-        "api_key": ZEBRASMS_API_KEY,
-        "action": "getNumber",
-        "service": service_code,
-        "country": country_code
-    }
-    try:
-        response = requests.get(ZEBRASMS_BASE_URL, params=params, timeout=12)
-        res_text = response.text.strip()
-        
-        if "ACCESS_NUMBER" in res_text:
-            parts = res_text.split(":")
-            return True, {"id": parts[1], "number": parts[2]}
-        elif "NO_NUMBERS" in res_text:
-            return False, "এই দেশের নম্বর স্টক এখন খালি।"
-        elif "NO_BALANCE" in res_text:
-            return False, "API ব্যালেন্স শেষ।"
-        else:
-            return False, f"Server Response: {res_text}"
+    """ZebraSMS API থেকে নম্বর পাওয়ার উন্নত ফাংশন"""
+    # প্রথমে সার্ভিস দিয়ে চেষ্টা করবে, না হলে 'any' / 'ot' দিয়ে ট্রাই করবে
+    services_to_try = [service_code, "fb", "f", "ot", "any"]
+    
+    for s_code in services_to_try:
+        params = {
+            "api_key": ZEBRASMS_API_KEY,
+            "action": "getNumber",
+            "service": s_code,
+            "country": country_code
+        }
+        try:
+            response = requests.get(ZEBRASMS_BASE_URL, params=params, timeout=10)
+            res_text = response.text.strip()
             
-    except Exception as e:
-        return False, str(e)
+            if "ACCESS_NUMBER" in res_text:
+                parts = res_text.split(":")
+                return True, {"id": parts[1], "number": parts[2]}
+            elif "NO_NUMBERS" in res_text:
+                continue
+            elif "NO_BALANCE" in res_text:
+                return False, "⚠️ API একাউন্টে ব্যালেন্স নেই।"
+            elif "BAD_KEY" in res_text:
+                return False, "⚠️ API Key সঠিক নয়।"
+            else:
+                last_response = res_text
+        except Exception as e:
+            return False, str(e)
+            
+    return False, "❌ এই মুহূর্তে Madagascar/এই দেশের কোনো নম্বর স্টকে খালি নেই।"
 
 def api_check_otp(tx_id):
-    """ZebraSMS API থেকে OTP কোড রিফ্রেশ"""
     params = {
         "api_key": ZEBRASMS_API_KEY,
         "action": "getStatus",
         "id": tx_id
     }
     try:
-        response = requests.get(ZEBRASMS_BASE_URL, params=params, timeout=12)
+        response = requests.get(ZEBRASMS_BASE_URL, params=params, timeout=10)
         res_text = response.text.strip()
         
         if "STATUS_OK" in res_text:
@@ -122,32 +127,27 @@ def api_check_otp(tx_id):
     except Exception as e:
         return False, str(e)
 
-# ==================== USER HANDLERS ====================
+# ==================== HANDLERS ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user.id, user.username or "No Username")
     
     keyboard = [
-        [InlineKeyboardButton("🌐 কনসোল রেঞ্জ ও দেশ সিলেক্ট করুন", callback_data="select_range")],
-        [InlineKeyboardButton("👨‍💻 সাপোর্ট", url="https://t.me/your_support_username")]
+        [InlineKeyboardButton("🌐 কনসোল রেঞ্জ ও দেশ সিলেক্ট করুন", callback_data="select_range")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     welcome_msg = (
         f"👋 **হ্যালো {user.first_name}!**\n\n"
-        f"আমাদের **ZebraSMS Live Console Bot**-এ স্বাগতম! 📱\n"
-        f"কনসোলে বর্তমানে লাইভ থাকা রেঞ্জ থেকে নম্বর নির্বাচন করুন।\n\n"
+        f"ZebraSMS Live Console Bot-এ স্বাগতম!\n"
         f"🆔 **আপনার ID:** `{user.id}`"
     )
-    
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
 
     if query.data == "select_range":
         keyboard = []
@@ -156,18 +156,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         keyboard.append([InlineKeyboardButton("🔙 প্রধান মেনু", callback_data="main_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.edit_text("🎯 **কনসোলে বর্তমানে সক্রিয় দেশ ও রেঞ্জ:**", reply_markup=reply_markup, parse_mode="Markdown")
+        await query.message.edit_text("🎯 **লাইভ কনসোল থেকে দেশ সিলেক্ট করুন:**", reply_markup=reply_markup, parse_mode="Markdown")
 
     elif query.data.startswith("getrange_"):
         range_key = query.data.split("_")[1]
         range_info = CONSOLE_RANGE_MAPPING.get(range_key)
 
-        if not range_info:
-            await query.message.edit_text("❌ অকার্যকর রেঞ্জ!")
-            return
-
-        await query.message.edit_text(f"⏳ **{range_info['country']}** - কনসোল থেকে নম্বর সংগ্রহ করা হচ্ছে...")
+        await query.message.edit_text(f"⏳ **{range_info['country']}** - কনসোল থেকে নম্বর খোঁজা হচ্ছে...")
 
         success, result = api_get_number(country_code=range_info["country_code"], service_code=range_info["service"])
 
@@ -177,8 +172,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             keyboard = [
                 [InlineKeyboardButton("📩 OTP কোড চেক করুন", callback_data=f"check_otp_{tx_id}")],
-                [InlineKeyboardButton("🔄 নতুন নম্বর নিন", callback_data="select_range")],
-                [InlineKeyboardButton("🔙 প্রধান মেনু", callback_data="main_menu")]
+                [InlineKeyboardButton("🔄 অন্য নম্বর নিন", callback_data="select_range")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -187,13 +181,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🌍 **দেশ:** {range_info['country']}\n"
                 f"📞 **নম্বর:** `{number}`\n"
                 f"🆔 **ID:** `{tx_id}`\n\n"
-                f"💡 অ্যাপে SMS পাঠানোর পর **'OTP কোড চেক করুন'** বাটনে চাপ দিন।"
+                f"💡 SMS পাঠানোর পর **'OTP কোড চেক করুন'** বাটনে চাপ দিন।"
             )
             await query.message.edit_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
         else:
-            keyboard = [[InlineKeyboardButton("🔄 অন্য দেশ ট্রাই করুন", callback_data="select_range")]]
+            keyboard = [[InlineKeyboardButton("🔄 আবার চেষ্টা করুন", callback_data="select_range")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.edit_text(f"❌ **নম্বর পাওয়া যায়নি!**\n\n**কারণ:** `{result}`", reply_markup=reply_markup, parse_mode="Markdown")
+            await query.message.edit_text(f"❌ **নম্বর পাওয়া যায়নি!**\n\n**কারণ:** {result}", reply_markup=reply_markup, parse_mode="Markdown")
 
     elif query.data.startswith("check_otp_"):
         tx_id = query.data.split("_")[2]
@@ -202,77 +196,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             await query.message.reply_text(f"🎉 **আপনার OTP কোড:** `{code}`", parse_mode="Markdown")
         elif code == "WAITING":
-            await query.message.reply_text("⏳ কোড এখনও পৌঁছায়নি। SMS পাঠানোর পর কয়েক সেকেন্ড অপেক্ষা করে আবার চেষ্টা করুন।")
+            await query.message.reply_text("⏳ OTP এখনও আসেনি। কয়েক সেকেন্ড পর আবার বাটনে ক্লিক করুন।")
         else:
             await query.message.reply_text(f"⚠️ স্ট্যাটাস: `{code}`", parse_mode="Markdown")
 
     elif query.data == "main_menu":
-        keyboard = [
-            [InlineKeyboardButton("🌐 কনসোল রেঞ্জ ও দেশ সিলেক্ট করুন", callback_data="select_range")],
-            [InlineKeyboardButton("👨‍💻 সাপোর্ট", url="https://t.me/your_support_username")]
-        ]
+        keyboard = [[InlineKeyboardButton("🌐 কনসোল রেঞ্জ সিলেক্ট করুন", callback_data="select_range")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        welcome_msg = (
-            f"👋 **হ্যালো {query.from_user.first_name}!**\n\n"
-            f"🆔 **আপনার ID:** `{user_id}`"
-        )
-        await query.message.edit_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
-
-# ==================== ADMIN COMMANDS ====================
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    total = get_total_users()
-    admin_msg = (
-        f"🛠️ **অ্যাডমিন প্যানেল**\n\n"
-        f"📊 **মোট ইউজার:** {total}\n\n"
-        f"📢 **ব্রডকাস্ট পাঠাতে:**\n"
-        f"`/broadcast আপনার মেসেজ`"
-    )
-    await update.message.reply_text(admin_msg, parse_mode="Markdown")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("❌ মেসেজ লিখুন।", parse_mode="Markdown")
-        return
-
-    msg = " ".join(context.args)
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    users = cursor.fetchall()
-    conn.close()
-
-    count = 0
-    for u in users:
-        try:
-            await context.bot.send_message(chat_id=u[0], text=msg)
-            count += 1
-        except Exception:
-            pass
-
-    await update.message.reply_text(f"✅ মোট {count} জন ইউজারকে মেসেজ পাঠানো হয়েছে।")
-
-# ==================== MAIN APPLICATION ====================
+        await query.message.edit_text("প্রধান মেনু", reply_markup=reply_markup)
 
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    # Admin Handlers
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-
-    print("ZebraSMS Console Live Bot চালুর জন্য প্রস্তুত...")
+    print("Bot Running...")
     app.run_polling()
 
 if __name__ == "__main__":
