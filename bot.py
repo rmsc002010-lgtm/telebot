@@ -33,8 +33,8 @@ import httpx
 BOT_TOKEN = "8852330034:AAG-VW3qO9EuaPMcf54dtD_fpiNkTOkfKYI"
 GROUP_ID = -1004415108815
 
-SECONDARY_API_KEY = "MBVVO65D7T9"
-CONSOLE_URL = "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/console"
+PRIMARY_API_KEY = "6U3G3DDZ6GB"
+CONSOLE_URL = "https://zebrasms.com/api/v1/console"
 
 POLL_SECONDS = 5
 REQUEST_TIMEOUT = 20
@@ -46,11 +46,11 @@ SKIP_INITIAL_ANNOUNCEMENT = True
 
 
 HEADERS = {
-    "mauthapi": SECONDARY_API_KEY,
+    "MAuth": PRIMARY_API_KEY,
     "Content-Type": "application/json",
 }
 
-RANGE_RE = re.compile(r"^\d+X+$", re.IGNORECASE)
+RANGE_RE = re.compile(r"^\d+X+$")
 
 
 def first_value(obj, keys):
@@ -110,21 +110,28 @@ def extract_console_ranges(payload):
 
     Only explicit masked ranges present in /console are accepted.
     """
-    root = payload.get("data", payload) if isinstance(payload, dict) else payload
-
+    # Zebra's Console response is structured as data.rows.
     records = []
-    if isinstance(root, dict):
-        for key in ("rows", "items", "hits", "logs", "records", "results", "console"):
-            value = root.get(key)
-            if isinstance(value, list):
-                records = value
-                break
-
-        if not records:
-            records = [root]
-
-    elif isinstance(root, list):
-        records = root
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("rows"), list):
+            records = data["rows"]
+        elif isinstance(data, list):
+            records = data
+        else:
+            root = data if data is not None else payload
+            if isinstance(root, dict):
+                for key in ("rows", "items", "hits", "logs", "records", "results", "console"):
+                    value = root.get(key)
+                    if isinstance(value, list):
+                        records = value
+                        break
+                if not records:
+                    records = [root]
+            elif isinstance(root, list):
+                records = root
+    elif isinstance(payload, list):
+        records = payload
 
     services = {}
 
