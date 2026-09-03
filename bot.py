@@ -41,6 +41,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROUP_ID_RAW = os.getenv("GROUP_ID", "-1004415108815").strip()
 ZEBRA_MAUTH_TOKEN = os.getenv("ZEBRA_MAUTH_TOKEN", "").strip()
 
+# Inline buttons shown under each Telegram notification.
+# Change these two URLs if you use different destinations.
+NUMBER_BOT_URL = "https://t.me/testjonson2_bot"
+MAIN_CHANNEL_URL = "https://t.me/otpmastersgrp"
+
 CONSOLE_URL = "https://zebrasms.com/api/v1/console"
 
 POLL_SECONDS = 5
@@ -419,6 +424,20 @@ async def send_range(client, row, reason):
             "chat_id": GROUP_ID,
             "text": text,
             "disable_web_page_preview": True,
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🤖 Number Bot",
+                            "url": NUMBER_BOT_URL,
+                        },
+                        {
+                            "text": "📢 Main Channel",
+                            "url": MAIN_CHANNEL_URL,
+                        },
+                    ]
+                ]
+            },
         },
     )
 
@@ -448,6 +467,8 @@ async def main():
     print("Source: ONLY /console")
     print("Range source: data.rows[*].range")
     print("Phone numbers/OTP messages: NOT READ")
+    print(f"Number Bot button: {NUMBER_BOT_URL}")
+    print(f"Main Channel button: {MAIN_CHANNEL_URL}")
 
     timeout = httpx.Timeout(
         connect=10,
