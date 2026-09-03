@@ -22,6 +22,7 @@ Run:
 import asyncio
 import base64
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -35,7 +36,7 @@ import httpx
 BOT_TOKEN = "8852330034:AAG-VW3qO9EuaPMcf54dtD_fpiNkTOkfKYI"
 GROUP_ID = -1004415108815
 
-PRIMARY_API_KEY = "6U3G3DDZ6GB"
+MAUTH_TOKEN = os.getenv("ZEBRA_MAUTH_TOKEN", "").strip()
 CONSOLE_URL = "https://zebrasms.com/api/v1/console"
 
 POLL_SECONDS = 5
@@ -48,7 +49,7 @@ SKIP_INITIAL_ANNOUNCEMENT = False
 
 
 HEADERS = {
-    "MAuth": PRIMARY_API_KEY,
+    "MAuth": MAUTH_TOKEN,
     "Content-Type": "application/json",
     "Accept": "application/cbor, application/json, text/plain, */*",
 }
@@ -350,6 +351,9 @@ def format_new_ranges(new_ranges, services):
 
 
 async def main():
+    if not MAUTH_TOKEN:
+        raise RuntimeError("Missing Railway variable: ZEBRA_MAUTH_TOKEN")
+
     print("Zebra SMS Console Range Monitor started.")
     print(f"Console: {CONSOLE_URL}")
     print(f"Group ID: {GROUP_ID}")
