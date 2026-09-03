@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,14 +11,31 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ⚙️ CONFIGURATION & CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-BOT_URL = "https://t.me/YourBotUsername"
-SUPPORT_LINK = "https://t.me/YourAdminUsername"
-OTP_GROUP_ID = -1001234567890  # Replace with your Group ID
+BOT_URL = "https://t.me/testjonson2_bot"
+BOT_TOKEN = "8852330034:AAG-VW3qO9EuaPMcf54dtD_fpiNkTOkfKYI"
+OTP_GROUP_ID = -1004415108815
+OTP_GROUP_URL = "https://t.me/otpmastersgrp"
+ADMIN_ID = 1586853120
+ADMINS = [1586853120]
+OWNER_ID = "1586853120"
+PRIMARY_API_KEY = "6U3G3DDZ6GB"
+DEVELOPER_ID = 8595326790
+DEVELOPER_USERNAME = "@akikshahrin"
+DEVELOPER_LINK = "https://t.me/akikshahrin"
+MONGODB_URI = "mongodb+srv://dreamsbyshahin_db_user:Z********26@zebrasmsofficial.xkrbvj9.mongodb.net/?appName=ZEBRASMSOFFICIAL"
+
+PRIMARY_BASE_URL = "https://zebrasms.com/api/v1"
+PRIMARY_HEADERS = {"MAuth": PRIMARY_API_KEY, "Content-Type": "application/json"}
+SECONDARY_API_KEY = "MBVVO65D7T9"
+SECONDARY_BASE_URL = "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
+SECONDARY_HEADERS = {"mauthapi": SECONDARY_API_KEY, "Content-Type": "application/json"}
+SUPPORT_LINK = "https://t.me/akikshahrin"
+
 CHECK_INTERVAL = 5  # Seconds between checks
 PAID_SMS_FILE = "paid_sms.json"
 
@@ -28,13 +46,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Mock/In-memory databases for missing references
+# MongoDB Async Connection Setup
+try:
+    mongo_client = AsyncIOMotorClient(MONGODB_URI)
+    db = mongo_client["zebrasmsofficial"]
+    logger.info("Connecting to MongoDB Atlas...")
+except Exception as e:
+    logger.error(f"MongoDB connection error: {e}")
+
+# In-memory data structures
 active_numbers = {}
 paid_data = {}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🛠️ HELPER FUNCTIONS (Placeholder definitions to prevent crashes)
+# 🛠️ HELPER FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 def get_premium_custom_emoji(name: str) -> str:
     emojis = {
@@ -60,7 +86,7 @@ def format_premium_divider(style: str) -> str:
 
 
 def get_country_info(num: str):
-    return "🏳️", "Unknown"
+    return "🌐", "Global"
 
 
 def update_traffic_stats(service: str, country: str, range_info: str, hits: int = 1):
@@ -82,7 +108,7 @@ def is_user_banned(uid: int) -> bool:
 
 
 def is_admin(uid: int) -> bool:
-    return True
+    return uid == ADMIN_ID or uid in ADMINS or str(uid) == OWNER_ID
 
 
 def get_user(uid: int):
@@ -155,7 +181,10 @@ def main_keyboard(uid: int):
     kbd = [
         [InlineKeyboardButton("📞 GET NUMBER", callback_data="back_services")],
         [InlineKeyboardButton("📊 TRAFFIC", callback_data="traffic_home")],
+        [InlineKeyboardButton("💬 SUPPORT", url=SUPPORT_LINK), InlineKeyboardButton("👥 OTP GROUP", url=OTP_GROUP_URL)]
     ]
+    if is_admin(uid):
+        kbd.append([InlineKeyboardButton("⚙️ ADMIN PANEL", callback_data="admin_panel")])
     return InlineKeyboardMarkup(kbd)
 
 
@@ -252,7 +281,6 @@ async def monitor_loop(app):
     """Background task to continuously check for incoming OTPs."""
     while True:
         try:
-            # Example mock SMS trigger logic:
             num = "237620123456"
             service_name = "Telegram"
             range_info = "237620XXX"
@@ -291,8 +319,7 @@ async def monitor_loop(app):
                 f"💬 <b>SMS:</b> <code>{html.escape(full_sms)}</code>"
             )
             try:
-                if OTP_GROUP_ID != -1001234567890:
-                    await app.bot.send_message(chat_id=OTP_GROUP_ID, text=group_msg, parse_mode="HTML")
+                await app.bot.send_message(chat_id=OTP_GROUP_ID, text=group_msg, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Failed to send OTP to Group: {e}")
 
@@ -334,6 +361,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data == "back_to_main":
         await query.message.edit_text(WELCOME_MESSAGE, parse_mode="HTML", reply_markup=main_keyboard(uid))
+        return
+
+    if data == "admin_panel" and is_admin(uid):
+        await query.message.edit_text("⚙️ <b>ADMIN PANEL</b>", parse_mode="HTML", reply_markup=admin_main_keyboard())
         return
 
     if data == "traffic_home":
