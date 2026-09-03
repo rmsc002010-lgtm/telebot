@@ -1,50 +1,315 @@
-country_flag, country_name = get_country_info(num)
-    update_traffic_stats(service_name, country_name, range_info, hits=1)
+import asyncio
+import logging
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-    now_time = datetime.now()
-    user_msg = (
-        f"{get_premium_custom_emoji('done')} <b>OTP RECEIVED SUCCESSFULLY!</b>\n"
-        f"{format_premium_divider('success')}\n"
-        f"<blockquote>{get_premium_custom_emoji('country')} COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
-        f"<blockquote>{get_premium_custom_emoji('service')} SERVICE: <code>{service_name}</code></blockquote>\n"
-        f"<blockquote>{get_premium_custom_emoji('number')} NUMBER: <code>{num}</code></blockquote>\n"
-        f"<blockquote>{get_premium_custom_emoji('otp')} OTP: <code>{otp_code}</code></blockquote>\n"
-        f"<blockquote>{get_premium_custom_emoji('sms')} SMS: <code>{html.escape(full_sms)}</code></blockquote>\n"
-        f"📅 {now_time.strftime('%d %B, %Y')} | {now_time.strftime('%I:%M %p')}"
-    )
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚙️ CONFIGURATION & CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_URL = "https://t.me/YourBotUsername"
+SUPPORT_LINK = "https://t.me/YourAdminUsername"
+OTP_GROUP_ID = -1001234567890  # Replace with your Group ID
+CHECK_INTERVAL = 5  # Seconds between checks
+PAID_SMS_FILE = "paid_sms.json"
 
-    if uid:
-        try:
-            await app.bot.send_message(chat_id=uid, text=user_msg, parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"Failed to send OTP to user {uid}: {e}")
+WELCOME_MESSAGE = "<b>Welcome to Zebra SMS Ultra Bot!</b>\nSelect an option from the menu below:"
 
-    group_msg = (
-        f"⚡ <b>NEW OTP RECEIVED</b> ⚡\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 <b>Service:</b> {service_name}\n"
-        f"📞 <b>Number:</b> {mask_number(num)}\n"
-        f"🔑 <b>OTP:</b> <code>{otp_code}</code>\n"
-        f"💬 <b>SMS:</b> <code>{html.escape(full_sms)}</code>"
-    )
-    try:
-        await app.bot.send_message(chat_id=OTP_GROUP_ID, text=group_msg, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Failed to send OTP to Group: {e}")
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-    paid_data[sms_key] = {
-        "uid": uid,
-        "number": num,
-        "otp": otp_code,
-        "sms": full_sms,
-        "timestamp": now_time.isoformat()
+# Mock/In-memory databases for missing references
+active_numbers = {}
+paid_data = {}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🛠️ HELPER FUNCTIONS (Placeholder definitions to prevent crashes)
+# ══════════════════════════════════════════════════════════════════════════════
+def get_premium_custom_emoji(name: str) -> str:
+    emojis = {
+        "done": "✅",
+        "country": "🌐",
+        "service": "📱",
+        "number": "📞",
+        "otp": "🔑",
+        "sms": "💬",
+        "dashboard": "📊",
+        "phone": "📲",
+        "range": "📶",
+        "money": "💰",
+        "user": "👤",
+        "gem": "💎",
+        "shield": "🛡️",
     }
-    save_data(paid_data, PAID_SMS_FILE)
+    return emojis.get(name, "⭐")
 
-await asyncio.sleep(CHECK_INTERVAL)
-except Exception as e:
-    logger.error(f"Monitor loop error: {e}")
-    await asyncio.sleep(5)
+
+def format_premium_divider(style: str) -> str:
+    return "━━━━━━━━━━━━━━━━━━━━━━"
+
+
+def get_country_info(num: str):
+    return "🏳️", "Unknown"
+
+
+def update_traffic_stats(service: str, country: str, range_info: str, hits: int = 1):
+    pass
+
+
+def mask_number(num: str) -> str:
+    if len(str(num)) > 6:
+        return str(num)[:3] + "****" + str(num)[-3:]
+    return str(num)
+
+
+def save_data(data, filepath):
+    pass
+
+
+def is_user_banned(uid: int) -> bool:
+    return False
+
+
+def is_admin(uid: int) -> bool:
+    return True
+
+
+def get_user(uid: int):
+    return {"balance": 0.00}
+
+
+def get_user_stats(uid: int):
+    return {"total_numbers": 0, "total_otps": 0}
+
+
+def get_user_otp_rate(uid: int) -> float:
+    return 0.10
+
+
+def format_balance(val: float) -> str:
+    return f"{val:.2f}"
+
+
+def get_referral_stats(uid: int):
+    return {"count": 0}
+
+
+def get_referral_price() -> float:
+    return 0.50
+
+
+def user_exists(uid: int) -> bool:
+    return True
+
+
+def add_referral(ref_id: int, new_id: int) -> bool:
+    return False
+
+
+async def update_db_balance(uid: int, amount: float):
+    pass
+
+
+def add_number_taken(uid: int, count: int = 1):
+    pass
+
+
+def normalize_number(num: str) -> str:
+    return str(num).replace("+", "").strip()
+
+
+async def check_force_join(uid: int, message=None, context=None) -> bool:
+    return True
+
+
+def start_periodic_check():
+    pass
+
+
+# API Mock Placeholders
+async def fetch_services_cached():
+    return {"telegram": {"ranges": ["237620XXX"]}, "whatsapp": {"ranges": ["120155XXX"]}}
+
+
+async def auto_select_best_range(svc: str, prefix: str):
+    return "237620XXX"
+
+
+async def get_number_from_api(rng: str):
+    return "+237620123456", "Cameroon"
+
+
+# Keyboards
+def main_keyboard(uid: int):
+    kbd = [
+        [InlineKeyboardButton("📞 GET NUMBER", callback_data="back_services")],
+        [InlineKeyboardButton("📊 TRAFFIC", callback_data="traffic_home")],
+    ]
+    return InlineKeyboardMarkup(kbd)
+
+
+def cancel_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ CANCEL", callback_data="back_to_main")]])
+
+
+def admin_main_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 BACK", callback_data="back_to_main")]])
+
+
+def user_management_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 BACK", callback_data="back_to_main")]])
+
+
+def system_config_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 BACK", callback_data="back_to_main")]])
+
+
+def build_traffic_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="traffic_refresh")]])
+
+
+def build_service_traffic_keyboard(svc):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Traffic Home", callback_data="traffic_home")]])
+
+
+def build_country_traffic_keyboard(svc, ctr):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Traffic Home", callback_data="traffic_home")]])
+
+
+def _build_services_keyboard(services):
+    buttons = [[InlineKeyboardButton(svc.upper(), callback_data=f"svc_{svc}")] for svc in services]
+    buttons.append([InlineKeyboardButton("🔙 BACK", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _build_countries_keyboard(ranges, svc):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇨🇲 Cameroon (+237)", callback_data=f"country_237_{svc}")],
+        [InlineKeyboardButton("🔙 BACK", callback_data="back_services")]
+    ])
+
+
+def _build_ranges_keyboard(ranges, prefix, svc):
+    buttons = [[InlineKeyboardButton(r, callback_data=f"range_{r}_{svc}")] for r in ranges]
+    buttons.append([InlineKeyboardButton("🔙 BACK", callback_data=f"svc_{svc}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def render_traffic_dashboard():
+    return "<b>📊 TRAFFIC DASHBOARD</b>\nLive traffic data system."
+
+
+# Dummy Command / Flow Handlers
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Search command placeholder.")
+
+
+async def process_2fa_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Processing 2FA Key...")
+
+
+async def show_app_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    services = await fetch_services_cached()
+    await update.message.reply_text("Select Service:", reply_markup=_build_services_keyboard(services))
+
+
+async def traffic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = render_traffic_dashboard()
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=build_traffic_keyboard())
+
+
+async def get_2fa_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send your 2FA Secret Key:")
+
+
+async def assign_special_number(query, context, uid):
+    await query.message.edit_text("Special Numbers Menu")
+
+
+async def allocate_one_special_number_by_country(query, context, uid, prefix):
+    await query.message.edit_text("Allocating Special Number...")
+
+
+async def admin_traffic_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Admin Traffic Control")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔄 MONITOR LOOP
+# ══════════════════════════════════════════════════════════════════════════════
+async def monitor_loop(app):
+    """Background task to continuously check for incoming OTPs."""
+    while True:
+        try:
+            # Example mock SMS trigger logic:
+            num = "237620123456"
+            service_name = "Telegram"
+            range_info = "237620XXX"
+            otp_code = "123456"
+            full_sms = "Your Telegram code is 123456"
+            uid = None
+            sms_key = f"{num}_{otp_code}"
+
+            country_flag, country_name = get_country_info(num)
+            update_traffic_stats(service_name, country_name, range_info, hits=1)
+
+            now_time = datetime.now()
+            user_msg = (
+                f"{get_premium_custom_emoji('done')} <b>OTP RECEIVED SUCCESSFULLY!</b>\n"
+                f"{format_premium_divider('success')}\n"
+                f"<blockquote>{get_premium_custom_emoji('country')} COUNTRY: <code>{country_flag} {country_name}</code></blockquote>\n"
+                f"<blockquote>{get_premium_custom_emoji('service')} SERVICE: <code>{service_name}</code></blockquote>\n"
+                f"<blockquote>{get_premium_custom_emoji('number')} NUMBER: <code>{num}</code></blockquote>\n"
+                f"<blockquote>{get_premium_custom_emoji('otp')} OTP: <code>{otp_code}</code></blockquote>\n"
+                f"<blockquote>{get_premium_custom_emoji('sms')} SMS: <code>{html.escape(full_sms)}</code></blockquote>\n"
+                f"📅 {now_time.strftime('%d %B, %Y')} | {now_time.strftime('%I:%M %p')}"
+            )
+
+            if uid:
+                try:
+                    await app.bot.send_message(chat_id=uid, text=user_msg, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Failed to send OTP to user {uid}: {e}")
+
+            group_msg = (
+                f"⚡ <b>NEW OTP RECEIVED</b> ⚡\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 <b>Service:</b> {service_name}\n"
+                f"📞 <b>Number:</b> {mask_number(num)}\n"
+                f"🔑 <b>OTP:</b> <code>{otp_code}</code>\n"
+                f"💬 <b>SMS:</b> <code>{html.escape(full_sms)}</code>"
+            )
+            try:
+                if OTP_GROUP_ID != -1001234567890:
+                    await app.bot.send_message(chat_id=OTP_GROUP_ID, text=group_msg, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Failed to send OTP to Group: {e}")
+
+            paid_data[sms_key] = {
+                "uid": uid,
+                "number": num,
+                "otp": otp_code,
+                "sms": full_sms,
+                "timestamp": now_time.isoformat(),
+            }
+            save_data(paid_data, PAID_SMS_FILE)
+
+            await asyncio.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            logger.error(f"Monitor loop error: {e}")
+            await asyncio.sleep(5)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🎯 CALLBACK QUERY HANDLER
@@ -68,7 +333,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if data == "back_to_main":
-        await query.message.edit_text(WELCOME_MESSAGE, reply_markup=main_keyboard(uid))
+        await query.message.edit_text(WELCOME_MESSAGE, parse_mode="HTML", reply_markup=main_keyboard(uid))
         return
 
     if data == "traffic_home":
@@ -93,7 +358,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"{get_premium_custom_emoji('dashboard')} <b>TRAFFIC: {svc_name.upper()}</b>\n"
             f"Select country to view ranges:",
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
         return
 
@@ -106,7 +371,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"{get_premium_custom_emoji('dashboard')} <b>TRAFFIC: {svc_name.upper()} ({ctr_code})</b>\n"
             f"Top active ranges:",
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
         return
 
@@ -140,7 +405,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"{get_premium_custom_emoji('phone')} <b>SELECT YOUR SERVICE</b> {get_premium_custom_emoji('phone')}\n"
             f"<blockquote>📱 নিচ থেকে একটি <b>Service</b> সিলেক্ট করুন:</blockquote>",
             parse_mode="HTML",
-            reply_markup=_build_services_keyboard(services)
+            reply_markup=_build_services_keyboard(services),
         )
         return
 
@@ -153,7 +418,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.edit_text(
             f"{get_premium_custom_emoji('country')} <b>SELECT COUNTRY FOR {svc.upper()}</b>",
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
         return
 
@@ -169,7 +434,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if auto_range:
             number, country = await get_number_from_api(auto_range)
             if number:
-                active_numbers[normalize_number(number)] = {"uid": uid, "service": svc, "range": auto_range}
+                active_numbers[normalize_number(number)] = {
+                    "uid": uid,
+                    "service": svc,
+                    "range": auto_range,
+                }
                 add_number_taken(uid, 1)
                 await query.message.edit_text(
                     f"{get_premium_custom_emoji('done')} <b>NUMBER ALLOCATED (AUTO-RANGE)</b>\n"
@@ -181,8 +450,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🍏 Copy Number", callback_data=f"copy_number_{number}")],
-                        [InlineKeyboardButton("🔙 BACK", callback_data="back_services")]
-                    ])
+                        [InlineKeyboardButton("🔙 BACK", callback_data="back_services")],
+                    ]),
                 )
                 return
 
@@ -190,7 +459,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.edit_text(
             f"{get_premium_custom_emoji('range')} <b>SELECT RANGE FOR {svc.upper()}</b>",
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
         return
 
@@ -200,7 +469,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         svc = parts[2]
         number, country = await get_number_from_api(rng)
         if number:
-            active_numbers[normalize_number(number)] = {"uid": uid, "service": svc, "range": rng}
+            active_numbers[normalize_number(number)] = {
+                "uid": uid,
+                "service": svc,
+                "range": rng,
+            }
             add_number_taken(uid, 1)
             await query.message.edit_text(
                 f"{get_premium_custom_emoji('done')} <b>NUMBER ALLOCATED</b>\n"
@@ -212,8 +485,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🍏 Copy Number", callback_data=f"copy_number_{number}")],
-                    [InlineKeyboardButton("🔙 BACK", callback_data="back_services")]
-                ])
+                    [InlineKeyboardButton("🔙 BACK", callback_data="back_services")],
+                ]),
             )
         else:
             await query.answer("❌ Failed to fetch number for this range. Try another!", show_alert=True)
@@ -224,9 +497,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.edit_text(
             f"{get_premium_custom_emoji('range')} <b>ENTER CUSTOM RANGE</b>\n"
             f"Please send the range code (e.g. <code>237620XXX</code>):",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
         return
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 💬 MESSAGE HANDLER & COMMANDS
@@ -257,7 +531,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rng = text.upper()
         number, country = await get_number_from_api(rng)
         if number:
-            active_numbers[normalize_number(number)] = {"uid": uid, "service": "CUSTOM", "range": rng}
+            active_numbers[normalize_number(number)] = {
+                "uid": uid,
+                "service": "CUSTOM",
+                "range": rng,
+            }
             add_number_taken(uid, 1)
             await update.message.reply_text(
                 f"{get_premium_custom_emoji('done')} <b>NUMBER ALLOCATED</b>\n"
@@ -266,10 +544,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<blockquote>📶 Range: <code>{rng}</code></blockquote>\n"
                 f"<b>⏳ Waiting for SMS...</b>",
                 parse_mode="HTML",
-                reply_markup=main_keyboard(uid)
+                reply_markup=main_keyboard(uid),
             )
         else:
-            await update.message.reply_text("❌ Failed to fetch number. Invalid or empty range.", reply_markup=main_keyboard(uid))
+            await update.message.reply_text(
+                "❌ Failed to fetch number. Invalid or empty range.", reply_markup=main_keyboard(uid)
+            )
         return
 
     if text == "📞 GET NUMBER":
@@ -282,7 +562,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{get_premium_custom_emoji('range')} <b>ENTER RANGE</b>\n"
             f"Send range (e.g. <code>237620XXX</code>):",
             parse_mode="HTML",
-            reply_markup=cancel_keyboard()
+            reply_markup=cancel_keyboard(),
         )
         return
 
@@ -297,7 +577,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{format_premium_divider('primary')}\n"
             f"<blockquote>💰 Current Balance: <b>${format_balance(usr['balance'])}</b></blockquote>",
             parse_mode="HTML",
-            reply_markup=main_keyboard(uid)
+            reply_markup=main_keyboard(uid),
         )
         return
 
@@ -318,7 +598,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📞 Total Numbers: <b>{u_stats['total_numbers']}</b>\n"
             f"🔑 Total OTPs: <b>{u_stats['total_otps']}</b></blockquote>",
             parse_mode="HTML",
-            reply_markup=main_keyboard(uid)
+            reply_markup=main_keyboard(uid),
         )
         return
 
@@ -333,7 +613,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Total Referred: <b>{r_stats['count']}</b>\n"
             f"💰 Reward Per Refer: <b>${ref_price:.2f}</b></blockquote>",
             parse_mode="HTML",
-            reply_markup=main_keyboard(uid)
+            reply_markup=main_keyboard(uid),
         )
         return
 
@@ -341,30 +621,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"{get_premium_custom_emoji('shield')} <b>SUPPORT</b>\n"
             f"Contact Admin: {SUPPORT_LINK}",
-            reply_markup=main_keyboard(uid)
+            reply_markup=main_keyboard(uid),
         )
         return
 
     if text == "⚙️ ADMIN PANEL ⚙️" and is_admin(uid):
-        await update.message.reply_text("⚙️ <b>ADMIN PANEL</b>", parse_mode="HTML", reply_markup=admin_main_keyboard())
+        await update.message.reply_text(
+            "⚙️ <b>ADMIN PANEL</b>", parse_mode="HTML", reply_markup=admin_main_keyboard()
+        )
         return
 
-    if text == "🔙 BACK TO MAIN" or text == "🔙 BACK":
-        await update.message.reply_text(WELCOME_MESSAGE, reply_markup=main_keyboard(uid))
+    if text in ("🔙 BACK TO MAIN", "🔙 BACK"):
+        await update.message.reply_text(
+            WELCOME_MESSAGE, parse_mode="HTML", reply_markup=main_keyboard(uid)
+        )
         return
 
     if is_admin(uid):
         if text == "👥 USERS":
-            await update.message.reply_text("👥 <b>USER MANAGEMENT</b>", parse_mode="HTML", reply_markup=user_management_keyboard())
+            await update.message.reply_text(
+                "👥 <b>USER MANAGEMENT</b>", parse_mode="HTML", reply_markup=user_management_keyboard()
+            )
             return
         if text == "⚙️ CONFIG":
-            await update.message.reply_text("⚙️ <b>SYSTEM CONFIG</b>", parse_mode="HTML", reply_markup=system_config_keyboard())
+            await update.message.reply_text(
+                "⚙️ <b>SYSTEM CONFIG</b>", parse_mode="HTML", reply_markup=system_config_keyboard()
+            )
             return
         if text == "📊 TRAFFIC CONTROL":
             await admin_traffic_control(update, context)
             return
 
-    await update.message.reply_text(WELCOME_MESSAGE, reply_markup=main_keyboard(uid))
+    await update.message.reply_text(WELCOME_MESSAGE, parse_mode="HTML", reply_markup=main_keyboard(uid))
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -385,7 +674,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.send_message(
                             chat_id=referrer_id,
                             text=f"🎁 <b>New Referral!</b> You earned ${ref_price:.2f}",
-                            parse_mode="HTML"
+                            parse_mode="HTML",
                         )
                     except Exception:
                         pass
@@ -394,6 +683,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(WELCOME_MESSAGE, parse_mode="HTML", reply_markup=main_keyboard(uid))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🚀 MAIN APPLICATION INITIALIZATION
@@ -419,4 +709,6 @@ def main():
     logger.info("🤖 Zebra SMS Ultra Bot Started Successfully!")
     application.run_polling(drop_pending_updates=True)
 
+
 if __name__ == "__main__":
+    main()
