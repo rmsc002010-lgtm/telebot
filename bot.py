@@ -8,8 +8,8 @@ What this does:
 - Accepts only masked ranges such as 26134XXX / 25567XXX.
 - Never derives a range from a full phone number.
 - Never calls /liveaccess.
-- Never reads OTP/SMS message contents.
-- Sends only the current Console ranges to Telegram.
+- Never reads or forwards OTP/SMS message contents.
+- Sends the exact masked range plus non-sensitive Console metadata to Telegram.
 - On startup it sends the current snapshot once.
 - Afterwards it sends a message whenever the Console snapshot changes.
 
@@ -292,10 +292,125 @@ async def telegram_call(client, method, payload=None):
     return data.get("result")
 
 
-async def send_range(client, range_value, reason):
-    """Send only the explicit masked range."""
-    now = datetime.now().strftime("%H:%M:%S")
-    text = f"🟢 NEW ACTIVE RANGE\n\n{range_value}\n\n🕐 {now}"
+def first_present(row, keys):
+    """Return the first non-empty field from a Console row."""
+    if not isinstance(row, dict):
+        return None
+
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, "", [], {}):
+            if isinstance(value, dict):
+                nested = first_present(
+                    value,
+                    ("name", "label", "title", "value"),
+                )
+                if nested not in (None, ""):
+                    return nested
+            else:
+                return value
+
+    return None
+
+
+def row_metadata(row):
+    """
+    Extract only non-sensitive display metadata:
+    service, country, operator, and timestamp.
+
+    SMS/OTP/message fields are intentionally ignored.
+    """
+    service = first_present(
+        row,
+        (
+            "sender",
+            "service",
+            "service_name",
+            "serviceName",
+            "app",
+            "application",
+        ),
+    )
+
+    country = first_present(
+        row,
+        (
+            "country",
+            "country_name",
+            "countryName",
+            "nation",
+        ),
+    )
+
+    operator = first_present(
+        row,
+        (
+            "operator",
+            "operator_name",
+            "operatorName",
+            "carrier",
+            "network",
+        ),
+    )
+
+    raw_timestamp = first_present(
+        row,
+        (
+            "at_ms",
+            "timestamp",
+            "created_at",
+            "createdAt",
+            "time",
+        ),
+    )
+
+    display_time = None
+    if raw_timestamp not in (None, ""):
+        try:
+            numeric = float(raw_timestamp)
+            if numeric > 10_000_000_000:
+                numeric /= 1000
+            display_time = datetime.fromtimestamp(numeric).strftime("%H:%M:%S")
+        except (TypeError, ValueError, OSError, OverflowError):
+            display_time = str(raw_timestamp)
+
+    return {
+        "service": str(service).strip() if service else None,
+        "country": str(country).strip() if country else None,
+        "operator": str(operator).strip() if operator else None,
+        "time": display_time or datetime.now().strftime("%H:%M:%S"),
+    }
+
+
+async def send_range(client, row, reason):
+    """
+    Send the explicit masked range plus non-sensitive Console metadata.
+
+    Never forwards message/OTP/code fields.
+    """
+    range_value = explicit_range_from_row(row)
+    if not range_value:
+        return
+
+    meta = row_metadata(row)
+
+    lines = [
+        "🟢 NEW ACTIVE RANGE 🟢",
+        "",
+        f"⏰ Time: {meta['time']}",
+        f"📌 Range: {range_value}",
+    ]
+
+    if meta["service"]:
+        lines.append(f"⚙️ Service: {meta['service']}")
+
+    if meta["country"]:
+        lines.append(f"🌍 Country: {meta['country']}")
+
+    if meta["operator"]:
+        lines.append(f"📡 Operator: {meta['operator']}")
+
+    text = "\n".join(lines)
 
     result = await telegram_call(
         client,
@@ -310,7 +425,9 @@ async def send_range(client, range_value, reason):
     message_id = result.get("message_id") if isinstance(result, dict) else None
     print(
         f"[Telegram] sent reason={reason} "
-        f"message_id={message_id} range={range_value}"
+        f"message_id={message_id} range={range_value} "
+        f"service={meta['service']!r} country={meta['country']!r} "
+        f"operator={meta['operator']!r}"
     )
 
 
@@ -391,11 +508,10 @@ async def main():
                     seen_events = set(list(seen_events)[-2500:])
 
                 for row in reversed(new_rows):
-                    range_value = explicit_range_from_row(row)
-                    if range_value:
+                    if explicit_range_from_row(row):
                         await send_range(
                             client,
-                            range_value,
+                            row,
                             "new_console_row",
                         )
 
