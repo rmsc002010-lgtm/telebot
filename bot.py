@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-Zebra SMS Console Range Monitor
+Zebra SMS Console Range Monitor — Console-only
 
-Purpose:
-- Reads ONLY the Zebra SMS /console feed.
-- Extracts only explicit masked ranges such as 26134XXX.
-- Sends NEWLY detected ranges to a Telegram group.
-- Does NOT read /liveaccess.
-- Does NOT read OTP/SMS messages or phone numbers.
-- Does NOT generate or modify ranges.
-- Uses Telegram Bot API sendMessage only, so it can run beside the main bot
-  even though it uses the same bot token.
+What this does:
+- Calls ONLY the Zebra SMS /api/v1/console endpoint.
+- Reads the explicit `range` field from `data.rows`.
+- Accepts only masked ranges such as 26134XXX / 25567XXX.
+- Never derives a range from a full phone number.
+- Never calls /liveaccess.
+- Never reads OTP/SMS message contents.
+- Sends only the current Console ranges to Telegram.
+- On startup it sends the current snapshot once.
+- Afterwards it sends a message whenever the Console snapshot changes.
 
-Install:
-    pip install httpx
+Railway Variables:
+    BOT_TOKEN
+    GROUP_ID
+    ZEBRA_MAUTH_TOKEN
 
-Run:
-    python console_range_monitor.py
+Requirements:
+    httpx>=0.27,<1
 """
 
 import asyncio
@@ -24,115 +27,139 @@ import base64
 import json
 import os
 import re
+import struct
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 
 
 # =========================
-# CONFIG
+# Railway environment
 # =========================
-BOT_TOKEN = "8852330034:AAG-VW3qO9EuaPMcf54dtD_fpiNkTOkfKYI"
-GROUP_ID = -1004415108815
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GROUP_ID_RAW = os.getenv("GROUP_ID", "-1004415108815").strip()
+ZEBRA_MAUTH_TOKEN = os.getenv("ZEBRA_MAUTH_TOKEN", "").strip()
 
-MAUTH_TOKEN = os.getenv("ZEBRA_MAUTH_TOKEN", "").strip()
 CONSOLE_URL = "https://zebrasms.com/api/v1/console"
 
 POLL_SECONDS = 5
-REQUEST_TIMEOUT = 20
+TIMEOUT = 20
 
-# If True, the first scan is only used as a baseline and is NOT posted.
-# This prevents the group from being flooded with old/current console rows
-# when the monitor starts.
-SKIP_INITIAL_ANNOUNCEMENT = False
-
-
-HEADERS = {
-    "MAuth": MAUTH_TOKEN,
-    "Content-Type": "application/json",
-    "Accept": "application/cbor, application/json, text/plain, */*",
-}
-
+# Explicitly require the masked form returned by Console.
 RANGE_RE = re.compile(r"^\d+X+$")
 
 
+def parse_chat_id(value: str):
+    """Telegram chat IDs can be negative integers."""
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+GROUP_ID = parse_chat_id(GROUP_ID_RAW)
+
+
+# =========================
+# Minimal CBOR decoder
+# =========================
 class CborDecodeError(Exception):
     pass
 
 
-def _cbor_uint(data, pos, additional):
+def cbor_uint(data: bytes, pos: int, additional: int):
     if additional < 24:
         return additional, pos
+
     nbytes = {24: 1, 25: 2, 26: 4, 27: 8}.get(additional)
-    if nbytes is None or pos + nbytes > len(data):
-        raise CborDecodeError("Unsupported/invalid CBOR integer")
-    return int.from_bytes(data[pos:pos+nbytes], "big"), pos + nbytes
+    if nbytes is None:
+        raise CborDecodeError("Unsupported CBOR integer width")
+
+    end = pos + nbytes
+    if end > len(data):
+        raise CborDecodeError("Truncated CBOR integer")
+
+    return int.from_bytes(data[pos:end], "big"), end
 
 
-def _decode_cbor_one(data, pos=0):
+def decode_cbor(data: bytes, pos: int = 0):
     if pos >= len(data):
         raise CborDecodeError("Unexpected end of CBOR")
+
     initial = data[pos]
     pos += 1
+
     major = initial >> 5
     additional = initial & 31
 
     if major in (0, 1):
-        value, pos = _cbor_uint(data, pos, additional)
+        value, pos = cbor_uint(data, pos, additional)
         return (value if major == 0 else -1 - value), pos
 
     if major in (2, 3):
-        length, pos = _cbor_uint(data, pos, additional)
+        length, pos = cbor_uint(data, pos, additional)
         if pos + length > len(data):
             raise CborDecodeError("Truncated CBOR string")
-        raw = data[pos:pos+length]
+
+        raw = data[pos:pos + length]
         pos += length
-        return (raw if major == 2 else raw.decode("utf-8", errors="replace")), pos
+
+        if major == 2:
+            return raw, pos
+
+        return raw.decode("utf-8", errors="replace"), pos
 
     if major == 4:
-        length, pos = _cbor_uint(data, pos, additional)
-        arr = []
+        length, pos = cbor_uint(data, pos, additional)
+        result = []
+
         for _ in range(length):
-            value, pos = _decode_cbor_one(data, pos)
-            arr.append(value)
-        return arr, pos
+            value, pos = decode_cbor(data, pos)
+            result.append(value)
+
+        return result, pos
 
     if major == 5:
-        length, pos = _cbor_uint(data, pos, additional)
-        obj = {}
+        length, pos = cbor_uint(data, pos, additional)
+        result = {}
+
         for _ in range(length):
-            key, pos = _decode_cbor_one(data, pos)
-            value, pos = _decode_cbor_one(data, pos)
+            key, pos = decode_cbor(data, pos)
+            value, pos = decode_cbor(data, pos)
+
             if isinstance(key, bytes):
                 key = key.decode("utf-8", errors="replace")
-            obj[key] = value
-        return obj, pos
+
+            result[key] = value
+
+        return result, pos
 
     if major == 7:
         if additional == 20:
             return False, pos
         if additional == 21:
             return True, pos
-        if additional == 22:
+        if additional in (22, 23):
             return None, pos
-        if additional == 23:
-            return None, pos
+
         if additional == 27:
-            import struct
-            if pos + 8 > len(data):
+            end = pos + 8
+            if end > len(data):
                 raise CborDecodeError("Truncated CBOR float")
-            return struct.unpack(">d", data[pos:pos+8])[0], pos + 8
+            return struct.unpack(">d", data[pos:end])[0], end
 
-    raise CborDecodeError(f"Unsupported CBOR major/additional: {major}/{additional}")
+    raise CborDecodeError(
+        f"Unsupported CBOR type major={major} additional={additional}"
+    )
 
 
-def decode_console_response(response):
-    """Decode JSON or the CBOR response used by the Zebra Console."""
+def decode_response(response: httpx.Response):
+    """Decode JSON or the CBOR representation used by the Console."""
     raw = response.content
     content_type = response.headers.get("content-type", "").lower()
 
-    # Some DevTools views expose CBOR as data:application/cbor;base64,...
+    # DevTools/copy output can expose a CBOR body as a data URI.
     text = raw.decode("utf-8", errors="replace").strip()
     if text.startswith("data:application/cbor;base64,"):
         raw = base64.b64decode(text.split(",", 1)[1])
@@ -141,316 +168,247 @@ def decode_console_response(response):
     if "json" in content_type:
         return json.loads(raw.decode("utf-8"))
 
-    if "cbor" in content_type or raw[:1] in (b"\x81", b"\x82", b"\x83", b"\x84", b"\x85", b"\x86", b"\x87", b"\x88", b"\x89", b"\x8a", b"\x8b", b"\x8c", b"\x8d", b"\x8e", b"\x8f", b"\xa1", b"\xa2", b"\xa3", b"\xa4", b"\xa5", b"\xa6", b"\xa7", b"\xa8", b"\xa9", b"\xaa", b"\xab", b"\xac", b"\xad", b"\xae", b"\xaf"):
-        value, _ = _decode_cbor_one(raw)
+    if "cbor" in content_type:
+        value, _ = decode_cbor(raw)
         return value
 
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Last chance: the body may still be a CBOR data URI.
-        if text.startswith("data:") and ";base64," in text:
-            raw = base64.b64decode(text.split(",", 1)[1])
-            value, _ = _decode_cbor_one(raw)
-            return value
-        raise
+        # Some proxies omit content-type.
+        value, _ = decode_cbor(raw)
+        return value
 
 
-def first_value(obj, keys):
-    """Get the first non-empty value from a dictionary."""
-    if not isinstance(obj, dict):
-        return None
-
-    for key in keys:
-        value = obj.get(key)
-        if value not in (None, "", [], {}):
-            if isinstance(value, dict):
-                nested = first_value(
-                    value,
-                    ("name", "id", "sid", "service", "platform", "value"),
-                )
-                if nested not in (None, ""):
-                    return nested
-            else:
-                return value
-
-    return None
-
-
-def walk_console_records(obj):
+# =========================
+# Console parsing
+# =========================
+def get_rows(payload):
     """
-    Recursively find objects that contain an explicit range field.
-
-    Important:
-    We NEVER create a range from a number. The range must already exist
-    explicitly in the Console response.
+    The captured Console response uses:
+        data.rows = [...]
+    We deliberately use that collection first.
     """
-    if isinstance(obj, list):
-        for item in obj:
-            yield from walk_console_records(item)
-
-    elif isinstance(obj, dict):
-        raw_range = first_value(
-            obj,
-            ("range", "range_id", "rangeId", "rid"),
-        )
-
-        if raw_range not in (None, ""):
-            yield obj
-
-        for value in obj.values():
-            if isinstance(value, (dict, list)):
-                yield from walk_console_records(value)
-
-
-def extract_console_ranges(payload):
-    """
-    Return:
-        {
-            "Facebook": {"26134XXX", "26136XXX"},
-            "Discord": {"26138XXX"}
-        }
-
-    Only explicit masked ranges present in /console are accepted.
-    """
-    # Zebra's Console response is structured as data.rows.
-    records = []
     if isinstance(payload, dict):
         data = payload.get("data")
+
         if isinstance(data, dict) and isinstance(data.get("rows"), list):
-            records = data["rows"]
-        elif isinstance(data, list):
-            records = data
-        else:
-            root = data if data is not None else payload
-            if isinstance(root, dict):
-                for key in ("rows", "items", "hits", "logs", "records", "results", "console"):
-                    value = root.get(key)
-                    if isinstance(value, list):
-                        records = value
-                        break
-                if not records:
-                    records = [root]
-            elif isinstance(root, list):
-                records = root
-    elif isinstance(payload, list):
-        records = payload
+            return data["rows"]
 
-    services = {}
+        if isinstance(data, list):
+            return data
 
-    for record in walk_console_records(records):
-        raw_range = first_value(
-            record,
-            ("range", "range_id", "rangeId", "rid"),
-        )
+    if isinstance(payload, list):
+        return payload
 
-        if raw_range is None:
+    return []
+
+
+def explicit_range_from_row(row):
+    """Return the explicit masked range only; never manufacture one."""
+    if not isinstance(row, dict):
+        return None
+
+    value = row.get("range")
+
+    if value in (None, ""):
+        return None
+
+    value = str(value).strip().upper()
+
+    if not RANGE_RE.fullmatch(value):
+        return None
+
+    return value
+
+
+def console_rows(payload):
+    """Return Console rows with explicit masked ranges only."""
+    rows = get_rows(payload)
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-
-        range_text = str(raw_range).strip().upper()
-
-        # Strict: the API must explicitly provide a masked range.
-        if not RANGE_RE.fullmatch(range_text):
+        range_value = explicit_range_from_row(row)
+        if not range_value:
             continue
-
-        service = first_value(
-            record,
-            (
-                "service",
-                "service_name",
-                "serviceName",
-                "sid",
-                "app",
-                "application",
-                "platform",
-            ),
-        )
-
-        if isinstance(service, dict):
-            service = first_value(
-                service,
-                ("name", "id", "sid", "service", "platform"),
-            )
-
-        service_text = str(service).strip() if service else "Console"
-
-        services.setdefault(service_text, set()).add(range_text)
-
-    return services
-
-
-async def fetch_console(client):
-    response = await client.get(CONSOLE_URL, headers=HEADERS)
-    response.raise_for_status()
-
-    payload = decode_console_response(response)
-
-    if isinstance(payload, dict):
-        meta = payload.get("meta")
-        if isinstance(meta, dict):
-            code = meta.get("code")
-            if code not in (None, 0, 200):
-                raise RuntimeError(f"Console API returned meta.code={code}")
-
-    return extract_console_ranges(payload)
-
-
-def flatten_ranges(services):
-    """Convert service->ranges to a single set of range strings."""
-    result = set()
-    for ranges in services.values():
-        result.update(ranges)
+        result.append(row)
     return result
 
+def row_signature(row):
+    """Stable identifier for a Console event/row."""
+    for key in ("idx", "id", "_id", "at_ms", "created_at", "timestamp"):
+        value = row.get(key) if isinstance(row, dict) else None
+        if value not in (None, ""):
+            return f"{key}:{value}"
+    # Fallback: use the whole row, but only for non-sensitive metadata/range.
+    return json.dumps(
+        {"range": explicit_range_from_row(row)},
+        sort_keys=True,
+    )
 
-async def send_group_message(client, text):
-    """
-    Uses Telegram Bot API directly.
-    No polling/webhook is used, so this process can share the same token
-    with the main bot as long as this monitor only sends messages.
-    """
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    response = await client.post(
-        url,
-        json={
+async def fetch_console(client: httpx.AsyncClient):
+    response = await client.get(
+        CONSOLE_URL,
+        headers={
+            "MAuth": ZEBRA_MAUTH_TOKEN,
+            "Accept": "application/cbor, application/json, text/plain, */*",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://zebrasms.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/152.0.0.0 Safari/537.36"
+            ),
+        },
+    )
+
+    response.raise_for_status()
+    payload = decode_response(response)
+
+    return console_rows(payload)
+
+
+# =========================
+# Telegram
+# =========================
+async def telegram_call(client, method, payload=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+
+    if payload is None:
+        response = await client.get(url)
+    else:
+        response = await client.post(url, json=payload)
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram {method} failed: {data}")
+
+    return data.get("result")
+
+
+async def send_range(client, range_value, reason):
+    """Send only the explicit masked range."""
+    now = datetime.now().strftime("%H:%M:%S")
+    text = f"🟢 NEW ACTIVE RANGE\n\n{range_value}\n\n🕐 {now}"
+
+    result = await telegram_call(
+        client,
+        "sendMessage",
+        {
             "chat_id": GROUP_ID,
             "text": text,
             "disable_web_page_preview": True,
         },
     )
-    response.raise_for_status()
 
-    data = response.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram API error: {data}")
-
-    result = data.get("result") or {}
-    chat = result.get("chat") or {}
+    message_id = result.get("message_id") if isinstance(result, dict) else None
     print(
-        "[Telegram] API OK "
-        f"message_id={result.get('message_id')} "
-        f"chat_id={chat.get('id')} "
-        f"chat_type={chat.get('type')} "
-        f"chat_title={chat.get('title', '')!r}"
+        f"[Telegram] sent reason={reason} "
+        f"message_id={message_id} range={range_value}"
     )
 
 
-def format_new_ranges(new_ranges, services):
-    """
-    Build a compact notification containing only ranges newly seen in
-    the current Console snapshot.
-    """
-    service_map = {}
-    for service, ranges in services.items():
-        for range_text in ranges:
-            service_map.setdefault(range_text, []).append(service)
-
-    lines = ["🦓 ZEBRA SMS — NEW CONSOLE RANGE", ""]
-
-    for range_text in sorted(new_ranges):
-        service_names = ", ".join(sorted(service_map.get(range_text, ["Console"])))
-        lines.append(f"📌 {range_text}")
-        lines.append(f"🛠 {service_names}")
-
-    now = datetime.now().strftime("%H:%M:%S")
-    lines.append("")
-    lines.append(f"🕐 Detected: {now}")
-
-    return "\n".join(lines)
-
-
+# =========================
+# Main
+# =========================
 async def main():
-    if not MAUTH_TOKEN:
+    if not BOT_TOKEN:
+        raise RuntimeError("Missing Railway variable: BOT_TOKEN")
+
+    if not ZEBRA_MAUTH_TOKEN:
         raise RuntimeError("Missing Railway variable: ZEBRA_MAUTH_TOKEN")
 
-    print("Zebra SMS Console Range Monitor started.")
-    print(f"Console: {CONSOLE_URL}")
+    print("Zebra Console Range Monitor starting...")
+    print(f"Console URL: {CONSOLE_URL}")
     print(f"Group ID: {GROUP_ID}")
-    print(f"Poll interval: {POLL_SECONDS}s")
+    print(f"Poll: {POLL_SECONDS}s")
     print("Source: ONLY /console")
-    print("OTP/SMS content: NOT USED")
+    print("Range source: data.rows[*].range")
+    print("Phone numbers/OTP messages: NOT READ")
 
-    seen_ranges = set()
-    first_scan = True
+    timeout = httpx.Timeout(
+        connect=10,
+        read=TIMEOUT,
+        write=10,
+        pool=10,
+    )
 
     limits = httpx.Limits(
         max_connections=10,
         max_keepalive_connections=5,
     )
 
-    timeout = httpx.Timeout(
-        connect=10,
-        read=REQUEST_TIMEOUT,
-        write=10,
-        pool=10,
-    )
-
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        # Verify the exact Telegram destination once at startup.
-        try:
-            me_resp = await client.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
-            )
-            me_resp.raise_for_status()
-            me_data = me_resp.json()
-            me = me_data.get("result") or {}
-            print(
-                "[Telegram] Bot OK "
-                f"username=@{me.get('username', '')} id={me.get('id')}"
-            )
 
-            chat_resp = await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getChat",
-                json={"chat_id": GROUP_ID},
-            )
-            chat_resp.raise_for_status()
-            chat_data = chat_resp.json()
-            if not chat_data.get("ok"):
-                raise RuntimeError(f"Telegram getChat error: {chat_data}")
+        # Telegram destination check.
+        me = await telegram_call(client, "getMe")
+        print(
+            f"[Telegram] bot=@{me.get('username')} "
+            f"id={me.get('id')}"
+        )
 
-            chat = chat_data.get("result") or {}
-            print(
-                "[Telegram] Target chat OK "
-                f"id={chat.get('id')} type={chat.get('type')} "
-                f"title={chat.get('title', '')!r}"
-            )
-        except Exception as exc:
-            print(f"[Telegram setup ERROR] {type(exc).__name__}: {exc}")
+        chat = await telegram_call(
+            client,
+            "getChat",
+            {"chat_id": GROUP_ID},
+        )
+        print(
+            f"[Telegram] target id={chat.get('id')} "
+            f"type={chat.get('type')} "
+            f"title={chat.get('title', '')!r}"
+        )
+
+        seen_events = set()
 
         while True:
             try:
-                services = await fetch_console(client)
-                current_ranges = flatten_ranges(services)
+                rows = await fetch_console(client)
 
+                current_ranges = [explicit_range_from_row(r) for r in rows]
                 print(
                     f"[{time.strftime('%H:%M:%S')}] "
-                    f"Console ranges: {sorted(current_ranges)}"
+                    f"Console rows={len(rows)} ranges={current_ranges}"
                 )
 
-                if first_scan:
-                    first_scan = False
-                    if current_ranges:
-                        # Send the ranges that are visible in Console right now.
-                        message = format_new_ranges(current_ranges, services)
-                        await send_group_message(client, message)
-                        print(f"[Telegram] Sent initial Console ranges: {sorted(current_ranges)}")
-                    else:
-                        print("[WARN] Console returned zero explicit masked ranges.")
-                    seen_ranges = set(current_ranges)
-                else:
-                    new_ranges = current_ranges - seen_ranges
+                # Process rows in the same order as the Console response.
+                # On the first poll, announce the currently visible rows once.
+                # On later polls, announce only rows/events not seen before.
+                new_rows = []
+                for row in rows:
+                    sig = row_signature(row)
+                    if sig not in seen_events:
+                        new_rows.append(row)
+                        seen_events.add(sig)
 
-                    if new_ranges:
-                        message = format_new_ranges(new_ranges, services)
-                        await send_group_message(client, message)
-                        print(f"[Telegram] Sent new ranges: {sorted(new_ranges)}")
+                # Prevent unbounded memory growth while keeping recent events.
+                if len(seen_events) > 5000:
+                    seen_events = set(list(seen_events)[-2500:])
 
-                    # Keep the snapshot synchronized with Console.
-                    seen_ranges = set(current_ranges)
+                for row in reversed(new_rows):
+                    range_value = explicit_range_from_row(row)
+                    if range_value:
+                        await send_range(
+                            client,
+                            range_value,
+                            "new_console_row",
+                        )
+
+            except httpx.HTTPStatusError as exc:
+                print(
+                    f"[ERROR] HTTP {exc.response.status_code} "
+                    f"from {exc.request.url}"
+                )
 
             except Exception as exc:
-                print(f"[ERROR] {type(exc).__name__}: {exc}")
+                print(
+                    f"[ERROR] {type(exc).__name__}: {exc}"
+                )
 
             await asyncio.sleep(POLL_SECONDS)
 
@@ -459,4 +417,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nMonitor stopped.")
+        print("Stopped.")
