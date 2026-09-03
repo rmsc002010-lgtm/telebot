@@ -20,6 +20,8 @@ Run:
 """
 
 import asyncio
+import base64
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -42,15 +44,115 @@ REQUEST_TIMEOUT = 20
 # If True, the first scan is only used as a baseline and is NOT posted.
 # This prevents the group from being flooded with old/current console rows
 # when the monitor starts.
-SKIP_INITIAL_ANNOUNCEMENT = True
+SKIP_INITIAL_ANNOUNCEMENT = False
 
 
 HEADERS = {
     "MAuth": PRIMARY_API_KEY,
     "Content-Type": "application/json",
+    "Accept": "application/cbor, application/json, text/plain, */*",
 }
 
 RANGE_RE = re.compile(r"^\d+X+$")
+
+
+class CborDecodeError(Exception):
+    pass
+
+
+def _cbor_uint(data, pos, additional):
+    if additional < 24:
+        return additional, pos
+    nbytes = {24: 1, 25: 2, 26: 4, 27: 8}.get(additional)
+    if nbytes is None or pos + nbytes > len(data):
+        raise CborDecodeError("Unsupported/invalid CBOR integer")
+    return int.from_bytes(data[pos:pos+nbytes], "big"), pos + nbytes
+
+
+def _decode_cbor_one(data, pos=0):
+    if pos >= len(data):
+        raise CborDecodeError("Unexpected end of CBOR")
+    initial = data[pos]
+    pos += 1
+    major = initial >> 5
+    additional = initial & 31
+
+    if major in (0, 1):
+        value, pos = _cbor_uint(data, pos, additional)
+        return (value if major == 0 else -1 - value), pos
+
+    if major in (2, 3):
+        length, pos = _cbor_uint(data, pos, additional)
+        if pos + length > len(data):
+            raise CborDecodeError("Truncated CBOR string")
+        raw = data[pos:pos+length]
+        pos += length
+        return (raw if major == 2 else raw.decode("utf-8", errors="replace")), pos
+
+    if major == 4:
+        length, pos = _cbor_uint(data, pos, additional)
+        arr = []
+        for _ in range(length):
+            value, pos = _decode_cbor_one(data, pos)
+            arr.append(value)
+        return arr, pos
+
+    if major == 5:
+        length, pos = _cbor_uint(data, pos, additional)
+        obj = {}
+        for _ in range(length):
+            key, pos = _decode_cbor_one(data, pos)
+            value, pos = _decode_cbor_one(data, pos)
+            if isinstance(key, bytes):
+                key = key.decode("utf-8", errors="replace")
+            obj[key] = value
+        return obj, pos
+
+    if major == 7:
+        if additional == 20:
+            return False, pos
+        if additional == 21:
+            return True, pos
+        if additional == 22:
+            return None, pos
+        if additional == 23:
+            return None, pos
+        if additional == 27:
+            import struct
+            if pos + 8 > len(data):
+                raise CborDecodeError("Truncated CBOR float")
+            return struct.unpack(">d", data[pos:pos+8])[0], pos + 8
+
+    raise CborDecodeError(f"Unsupported CBOR major/additional: {major}/{additional}")
+
+
+def decode_console_response(response):
+    """Decode JSON or the CBOR response used by the Zebra Console."""
+    raw = response.content
+    content_type = response.headers.get("content-type", "").lower()
+
+    # Some DevTools views expose CBOR as data:application/cbor;base64,...
+    text = raw.decode("utf-8", errors="replace").strip()
+    if text.startswith("data:application/cbor;base64,"):
+        raw = base64.b64decode(text.split(",", 1)[1])
+        content_type = "application/cbor"
+
+    if "json" in content_type:
+        return json.loads(raw.decode("utf-8"))
+
+    if "cbor" in content_type or raw[:1] in (b"\x81", b"\x82", b"\x83", b"\x84", b"\x85", b"\x86", b"\x87", b"\x88", b"\x89", b"\x8a", b"\x8b", b"\x8c", b"\x8d", b"\x8e", b"\x8f", b"\xa1", b"\xa2", b"\xa3", b"\xa4", b"\xa5", b"\xa6", b"\xa7", b"\xa8", b"\xa9", b"\xaa", b"\xab", b"\xac", b"\xad", b"\xae", b"\xaf"):
+        value, _ = _decode_cbor_one(raw)
+        return value
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Last chance: the body may still be a CBOR data URI.
+        if text.startswith("data:") and ";base64," in text:
+            raw = base64.b64decode(text.split(",", 1)[1])
+            value, _ = _decode_cbor_one(raw)
+            return value
+        raise
 
 
 def first_value(obj, keys):
@@ -180,7 +282,7 @@ async def fetch_console(client):
     response = await client.get(CONSOLE_URL, headers=HEADERS)
     response.raise_for_status()
 
-    payload = response.json()
+    payload = decode_console_response(response)
 
     if isinstance(payload, dict):
         meta = payload.get("meta")
@@ -281,22 +383,23 @@ async def main():
                     f"Console ranges: {sorted(current_ranges)}"
                 )
 
-                if first_scan and SKIP_INITIAL_ANNOUNCEMENT:
+                if first_scan:
+                    first_scan = False
+                    if current_ranges:
+                        # Send the ranges that are visible in Console right now.
+                        message = format_new_ranges(current_ranges, services)
+                        await send_group_message(client, message)
+                        print(f"[Telegram] Sent initial Console ranges: {sorted(current_ranges)}")
+                    else:
+                        print("[WARN] Console returned zero explicit masked ranges.")
                     seen_ranges = set(current_ranges)
-                    first_scan = False
-
                 else:
-                    first_scan = False
                     new_ranges = current_ranges - seen_ranges
 
                     if new_ranges:
                         message = format_new_ranges(new_ranges, services)
                         await send_group_message(client, message)
-
-                        print(
-                            f"[Telegram] Sent new ranges: "
-                            f"{sorted(new_ranges)}"
-                        )
+                        print(f"[Telegram] Sent new ranges: {sorted(new_ranges)}")
 
                     # Keep the snapshot synchronized with Console.
                     seen_ranges = set(current_ranges)
