@@ -31,6 +31,9 @@ LIVEACCESS_URL = f"{ZEBRA_BASE_URL}/publicapi/liveaccess"
 POLL_SECONDS = 5
 TIMEOUT_SECONDS = 20
 
+# Refresh live ranges every 60 seconds
+RANGE_CACHE_SECONDS = 60
+
 
 # =========================================================
 # Helpers
@@ -55,26 +58,53 @@ def format_time(value):
         return str(value)
 
 
-def mask_number(number):
-    """Mask phone number for Telegram display."""
+def full_number(number):
+    """Return the full number for display."""
+
+    if number in (None, ""):
+        return None
+
+    return str(number).strip()
+
+
+def fallback_range(number, prefix_len=8):
+    """
+    Create range from the first 8 digits.
+
+    Example:
+        225015151234 -> 22501515XXX
+    """
 
     if not number:
         return None
 
     number = str(number).strip()
 
-    if len(number) <= 6:
-        return "****"
+    if len(number) < prefix_len:
+        return None
 
-    return number[:4] + "****" + number[-2:]
+    return number[:prefix_len] + "XXX"
+
+
+def normalize_sender(sender):
+    if sender in (None, ""):
+        return ""
+
+    return str(sender).strip().lower()
+
+
+def normalize_range(value):
+    if value in (None, ""):
+        return None
+
+    return str(value).strip()
 
 
 def update_signature(row):
     """
     Build a stable identifier for a getupdate row.
 
-    IMPORTANT:
-    We deliberately do NOT use the message/code field.
+    Message content is deliberately not used.
     """
 
     if not isinstance(row, dict):
@@ -109,12 +139,7 @@ def update_signature(row):
 # =========================================================
 
 async def zebra_get(client, url, params=None):
-    """
-    Call Zebra Developer API.
-
-    Documentation specifies:
-        MAuth: <API KEY>
-    """
+    """Call Zebra Developer API."""
 
     response = await client.get(
         url,
@@ -130,7 +155,6 @@ async def zebra_get(client, url, params=None):
 
     payload = response.json()
 
-    # Zebra API uses meta.code rather than HTTP 200 alone.
     meta = payload.get("meta", {})
 
     code = meta.get("code")
@@ -167,35 +191,62 @@ async def fetch_updates(client):
     return rows
 
 
-async def fetch_live_ranges(client, sender=None):
+async def fetch_live_ranges(client):
     """
-    Optional live range lookup.
+    Get active sender/range metadata.
 
-    This only reads range metadata.
+    Returns:
+        {
+            "sender": ["range1", "range2"]
+        }
     """
-
-    params = {}
-
-    if sender:
-        params["sender"] = sender
 
     payload = await zebra_get(
         client,
         LIVEACCESS_URL,
-        params=params,
     )
 
     data = payload.get("data", {})
 
     if not isinstance(data, dict):
-        return []
+        return {}
 
     rows = data.get("rows", [])
 
     if not isinstance(rows, list):
-        return []
+        return {}
 
-    return rows
+    sender_ranges = {}
+
+    for item in rows:
+
+        if not isinstance(item, dict):
+            continue
+
+        sender = normalize_sender(
+            item.get("sender")
+        )
+
+        if not sender:
+            continue
+
+        ranges = item.get("ranges", [])
+
+        if not isinstance(ranges, list):
+            ranges = []
+
+        clean_ranges = []
+
+        for value in ranges:
+
+            value = normalize_range(value)
+
+            if value and value not in clean_ranges:
+                clean_ranges.append(value)
+
+        sender_ranges[sender] = clean_ranges
+
+    return sender_ranges
 
 
 # =========================================================
@@ -203,6 +254,7 @@ async def fetch_live_ranges(client, sender=None):
 # =========================================================
 
 async def telegram_call(client, method, payload=None):
+
     url = (
         f"https://api.telegram.org/"
         f"bot{BOT_TOKEN}/{method}"
@@ -232,13 +284,11 @@ async def telegram_call(client, method, payload=None):
 # Telegram message
 # =========================================================
 
-async def send_update(client, row):
-    """
-    Send NON-SENSITIVE getupdate metadata.
-
-    The API response may contain a 'message' field,
-    but this function deliberately NEVER reads it.
-    """
+async def send_update(
+    client,
+    row,
+    sender_ranges,
+):
 
     if not isinstance(row, dict):
         return
@@ -250,27 +300,68 @@ async def send_update(client, row):
     at_ms = row.get("at_ms")
 
     display_time = format_time(at_ms)
-    display_number = mask_number(number)
+
+    # FULL NUMBER
+    display_number = full_number(number)
+
+    # Sender based ranges from LIVEACCESS
+    ranges = sender_ranges.get(
+        normalize_sender(sender),
+        [],
+    )
+
+    # If Zebra liveaccess has no matching range,
+    # create a display range from first 8 digits.
+    if not ranges:
+        fallback = fallback_range(
+            display_number,
+            prefix_len=8,
+        )
+
+        if fallback:
+            ranges = [fallback]
 
     lines = [
-        "🟢 NEW DELIVERY UPDATE",
+        "🟢 New Active Range",
         "",
-        f"⏰ Time: {display_time}",
     ]
 
     if sender:
-        lines.append(f"📨 Sender: {sender}")
-
-    if display_number:
-        lines.append(f"📱 Number: {display_number}")
+        lines.append(
+            f"⚙️ Service: {sender}"
+        )
 
     if country:
-        lines.append(f"🌍 Country: {country}")
+        lines.append(
+            f"🌍 Country: {country}"
+        )
+
+    if display_number:
+        lines.append(
+            f"📱 Number: `{display_number}`"
+        )
+
+    if ranges:
+
+        lines.append("📊 Range:")
+
+        for range_value in ranges:
+            lines.append(
+                f"`{range_value}`"
+            )
 
     if operator:
-        lines.append(f"📡 Operator: {operator}")
+        lines.append(
+            f"📡 Operator: {operator}"
+        )
 
-    # Intentionally NO SMS/message/OTP content.
+    lines.extend([
+        "",
+        "📩 Full SMS ⤵️⤵️",
+        "🔐 Message content hidden",
+        "",
+        f"⏰ Time: {display_time}",
+    ])
 
     text = "\n".join(lines)
 
@@ -280,6 +371,7 @@ async def send_update(client, row):
         {
             "chat_id": GROUP_ID,
             "text": text,
+            "parse_mode": "Markdown",
             "disable_web_page_preview": True,
             "reply_markup": {
                 "inline_keyboard": [
@@ -308,8 +400,8 @@ async def send_update(client, row):
         "[Telegram] sent "
         f"message_id={message_id} "
         f"sender={sender!r} "
-        f"country={country!r} "
-        f"operator={operator!r}"
+        f"number={display_number!r} "
+        f"ranges={ranges!r}"
     )
 
 
@@ -318,7 +410,6 @@ async def send_update(client, row):
 # =========================================================
 
 async def startup_checks(client):
-    """Check Telegram credentials and target group."""
 
     me = await telegram_call(
         client,
@@ -369,10 +460,11 @@ async def main():
 
     print(f"API: {ZEBRA_BASE_URL}")
     print(f"GetUpdate: {GETUPDATE_URL}")
+    print(f"LiveAccess: {LIVEACCESS_URL}")
     print(f"Group ID: {GROUP_ID}")
     print(f"Poll interval: {POLL_SECONDS}s")
-    print("Format: JSON")
-    print("OTP/SMS message content: NOT READ")
+    print("Range prefix: 8 digits + XXX")
+    print("Message content: NOT READ")
     print("=" * 60)
 
     timeout = httpx.Timeout(
@@ -394,12 +486,78 @@ async def main():
 
         await startup_checks(client)
 
+        # -------------------------------------------------
+        # Initial live ranges
+        # -------------------------------------------------
+
+        sender_ranges = {}
+
+        try:
+
+            sender_ranges = await fetch_live_ranges(
+                client
+            )
+
+            print(
+                "[Zebra] Live ranges loaded: "
+                f"{len(sender_ranges)} senders"
+            )
+
+        except Exception as exc:
+
+            print(
+                "[Zebra RANGE ERROR] "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        last_range_refresh = time.monotonic()
+
         seen_updates = set()
 
         while True:
 
             try:
-                rows = await fetch_updates(client)
+
+                # -----------------------------------------
+                # Refresh live ranges every 60 seconds
+                # -----------------------------------------
+
+                now = time.monotonic()
+
+                if (
+                    now - last_range_refresh
+                    >= RANGE_CACHE_SECONDS
+                ):
+
+                    try:
+
+                        sender_ranges = (
+                            await fetch_live_ranges(
+                                client
+                            )
+                        )
+
+                        last_range_refresh = now
+
+                        print(
+                            "[Zebra] Live ranges refreshed: "
+                            f"{len(sender_ranges)} senders"
+                        )
+
+                    except Exception as exc:
+
+                        print(
+                            "[Zebra RANGE ERROR] "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+
+                # -----------------------------------------
+                # Get updates
+                # -----------------------------------------
+
+                rows = await fetch_updates(
+                    client
+                )
 
                 print(
                     f"[{time.strftime('%H:%M:%S')}] "
@@ -410,7 +568,9 @@ async def main():
 
                 for row in rows:
 
-                    signature = update_signature(row)
+                    signature = update_signature(
+                        row
+                    )
 
                     if not signature:
                         continue
@@ -419,10 +579,12 @@ async def main():
                         continue
 
                     seen_updates.add(signature)
+
                     new_rows.append(row)
 
                 # Keep memory bounded.
                 if len(seen_updates) > 5000:
+
                     seen_updates = set(
                         list(seen_updates)[-2500:]
                     )
@@ -431,12 +593,15 @@ async def main():
                 for row in reversed(new_rows):
 
                     try:
+
                         await send_update(
                             client,
                             row,
+                            sender_ranges,
                         )
 
                     except Exception as exc:
+
                         print(
                             "[Telegram ERROR] "
                             f"{type(exc).__name__}: {exc}"
@@ -457,7 +622,9 @@ async def main():
                     f"{type(exc).__name__}: {exc}"
                 )
 
-            await asyncio.sleep(POLL_SECONDS)
+            await asyncio.sleep(
+                POLL_SECONDS
+            )
 
 
 # =========================================================
@@ -467,7 +634,9 @@ async def main():
 if __name__ == "__main__":
 
     try:
+
         asyncio.run(main())
 
     except KeyboardInterrupt:
+
         print("Stopped.")
