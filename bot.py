@@ -9,27 +9,19 @@ import httpx
 
 
 # =========================================================
-# Railway Environment Variables
+# CONFIG
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROUP_ID_RAW = os.getenv("GROUP_ID", "-1004415108815").strip()
-ZEBRA_MAUTH_TOKEN = os.getenv("ZEBRA_MAUTH_TOKEN", "").strip()
-
-GROUP_ID = int(GROUP_ID_RAW)
-
-
-# =========================================================
-# Telegram
-# =========================================================
+GROUP_ID = int(
+    os.getenv("GROUP_ID", "-1004415108815").strip()
+)
+ZEBRA_MAUTH_TOKEN = os.getenv(
+    "ZEBRA_MAUTH_TOKEN", ""
+).strip()
 
 NUMBER_BOT_URL = "https://t.me/testjonson2_bot"
 MAIN_CHANNEL_URL = "https://t.me/otpmastersgrp"
-
-
-# =========================================================
-# Zebra Developer API
-# =========================================================
 
 ZEBRA_BASE_URL = "https://api.zebrasms.com/api/v1"
 
@@ -41,27 +33,17 @@ LIVEACCESS_URL = (
     f"{ZEBRA_BASE_URL}/publicapi/liveaccess"
 )
 
-
-# =========================================================
-# Settings
-# =========================================================
-
 POLL_SECONDS = 5
 TIMEOUT_SECONDS = 20
-
-# liveaccess refresh interval
 RANGE_REFRESH_SECONDS = 60
-
-# Keep this many signatures in memory
 MAX_SEEN = 5000
 
 
 # =========================================================
-# Helpers
+# HELPERS
 # =========================================================
 
 def format_time(value):
-    """Convert Zebra timestamp to readable local time."""
 
     if value in (None, ""):
         return datetime.now().strftime("%H:%M:%S")
@@ -80,44 +62,26 @@ def format_time(value):
         return str(value)
 
 
-def clean_number(number):
-    """Return full phone number."""
+def clean_number(value):
 
-    if number in (None, ""):
-        return None
+    if value in (None, ""):
+        return ""
 
-    return str(number).strip()
+    return str(value).strip()
 
 
-def normalize_number(number):
-    """
-    Normalize a phone number for matching.
+def digits_only(value):
 
-    Keeps digits only.
-
-    Example:
-        +261388755361 -> 261388755361
-    """
-
-    if number in (None, ""):
+    if value in (None, ""):
         return ""
 
     return "".join(
-        ch for ch in str(number)
+        ch for ch in str(value)
         if ch.isdigit()
     )
 
 
 def normalize_range(value):
-    """
-    Normalize range for matching.
-
-    Keeps digits and XXX.
-
-    Example:
-        26138XXX -> 26138XXX
-        +26138XXX -> 26138XXX
-    """
 
     if value in (None, ""):
         return ""
@@ -128,86 +92,186 @@ def normalize_range(value):
 
     for ch in value:
 
-        if ch.isdigit():
+        if ch.isdigit() or ch == "X":
             result.append(ch)
-
-        elif ch == "X":
-            result.append("X")
 
     return "".join(result)
 
+
+def fallback_range(number):
+
+    number = digits_only(number)
+
+    if len(number) < 8:
+        return None
+
+    return number[:8] + "XXX"
+
+
+# =========================================================
+# IMPORTANT:
+# NEW UPDATE DETECTION
+# =========================================================
+
+def get_row_identifier(row):
+
+    """
+    Create a stable identifier without reading SMS/message.
+
+    We prefer Zebra's own ID fields.
+
+    If unavailable, use all available delivery metadata.
+    """
+
+    if not isinstance(row, dict):
+        return None
+
+    # -----------------------------------------
+    # Prefer unique API identifiers
+    # -----------------------------------------
+
+    for key in (
+        "id",
+        "_id",
+        "idx",
+        "uuid",
+        "message_id",
+        "update_id",
+        "delivery_id",
+    ):
+
+        value = row.get(key)
+
+        if value not in (None, ""):
+
+            return (
+                f"ID|{key}|{value}"
+            )
+
+    # -----------------------------------------
+    # Timestamp-based identifier
+    # -----------------------------------------
+
+    at_ms = row.get("at_ms")
+
+    if at_ms not in (None, ""):
+
+        return "|".join([
+            "TIME",
+            str(at_ms),
+            str(row.get("number", "")),
+            str(row.get("sender", "")),
+            str(row.get("country", "")),
+            str(row.get("operator", "")),
+        ])
+
+    # -----------------------------------------
+    # Timestamp alternatives
+    # -----------------------------------------
+
+    for key in (
+        "timestamp",
+        "created_at",
+        "createdAt",
+        "time",
+    ):
+
+        value = row.get(key)
+
+        if value not in (None, ""):
+
+            return "|".join([
+                "TIME",
+                key,
+                str(value),
+                str(row.get("number", "")),
+                str(row.get("sender", "")),
+            ])
+
+    # -----------------------------------------
+    # Last-resort metadata signature
+    # -----------------------------------------
+
+    return "|".join([
+        "META",
+        str(row.get("number", "")),
+        str(row.get("sender", "")),
+        str(row.get("country", "")),
+        str(row.get("operator", "")),
+    ])
+
+
+def debug_row_fields(row):
+
+    """
+    Print ONLY field names and safe metadata.
+    Never prints message/SMS content.
+    """
+
+    if not isinstance(row, dict):
+        return
+
+    safe_fields = {}
+
+    for key, value in row.items():
+
+        if key.lower() in {
+            "message",
+            "sms",
+            "text",
+            "body",
+            "code",
+            "otp",
+        }:
+            continue
+
+        safe_fields[key] = value
+
+    print(
+        "[DEBUG] Row metadata:",
+        safe_fields
+    )
+
+
+# =========================================================
+# RANGE MATCHING
+# =========================================================
 
 def range_matches_number(
     range_value,
     number,
 ):
-    """
-    Check whether a range matches a number.
 
-    Example:
-        Range 26138XXX
-        Number +261388755361
-
-        => True
-    """
-
-    normalized_range = normalize_range(
+    range_value = normalize_range(
         range_value
     )
 
-    normalized_number = normalize_number(
+    number = digits_only(
         number
     )
 
-    if not normalized_range:
+    if not range_value or not number:
         return False
 
-    if not normalized_number:
-        return False
-
-    # Convert range prefix before XXX
-    prefix = normalized_range.split("X", 1)[0]
+    prefix = range_value.split(
+        "X",
+        1
+    )[0]
 
     if not prefix:
         return False
 
-    return normalized_number.startswith(prefix)
+    return number.startswith(prefix)
 
 
-def fallback_range(
-    number,
-    prefix_len=8,
-):
-    """
-    Create fallback range.
-
-    Example:
-        +225015151234
-        -> 22501515XXX
-    """
-
-    normalized = normalize_number(number)
-
-    if len(normalized) < prefix_len:
-        return None
-
-    return normalized[:prefix_len] + "XXX"
-
-
-def find_matching_ranges(
-    ranges,
+def find_matching_range(
+    active_ranges,
     number,
 ):
-    """
-    Return ONLY ranges matching this number.
-    """
-
-    if not isinstance(ranges, list):
-        return []
 
     matches = []
 
-    for value in ranges:
+    for value in active_ranges:
 
         value = normalize_range(value)
 
@@ -218,48 +282,18 @@ def find_matching_ranges(
             value,
             number,
         ):
+
             if value not in matches:
                 matches.append(value)
 
-    return matches
+    if matches:
+        return matches[0]
 
-
-def update_signature(row):
-    """
-    Stable identifier for a getupdate row.
-
-    Message content is deliberately NOT used.
-    """
-
-    if not isinstance(row, dict):
-        return None
-
-    for key in (
-        "id",
-        "_id",
-        "idx",
-        "at_ms",
-        "timestamp",
-    ):
-        value = row.get(key)
-
-        if value not in (None, ""):
-            return f"{key}:{value}"
-
-    return "|".join(
-        str(row.get(key, ""))
-        for key in (
-            "number",
-            "sender",
-            "country",
-            "operator",
-            "at_ms",
-        )
-    )
+    return fallback_range(number)
 
 
 # =========================================================
-# Zebra API
+# ZEBRA API
 # =========================================================
 
 async def zebra_get(
@@ -274,7 +308,7 @@ async def zebra_get(
         headers={
             "MAuth": ZEBRA_MAUTH_TOKEN,
             "Accept": "application/json",
-            "User-Agent": "ZebraSMS-Monitor/1.0",
+            "User-Agent": "ZebraSMS-Monitor/1.1",
         },
     )
 
@@ -284,13 +318,13 @@ async def zebra_get(
 
     meta = payload.get(
         "meta",
-        {},
+        {}
     )
 
     if meta.get("code") != 0:
 
         raise RuntimeError(
-            "Zebra API error: "
+            "Zebra API error "
             f"code={meta.get('code')} "
             f"error={meta.get('error')!r}"
         )
@@ -307,7 +341,7 @@ async def fetch_updates(client):
 
     data = payload.get(
         "data",
-        {},
+        {}
     )
 
     if not isinstance(data, dict):
@@ -315,7 +349,7 @@ async def fetch_updates(client):
 
     rows = data.get(
         "rows",
-        [],
+        []
     )
 
     if not isinstance(rows, list):
@@ -333,19 +367,19 @@ async def fetch_live_ranges(client):
 
     data = payload.get(
         "data",
-        {},
+        {}
     )
 
     if not isinstance(data, dict):
-        return {}
+        return []
 
     rows = data.get(
         "rows",
-        [],
+        []
     )
 
     if not isinstance(rows, list):
-        return {}
+        return []
 
     all_ranges = []
 
@@ -356,7 +390,7 @@ async def fetch_live_ranges(client):
 
         ranges = item.get(
             "ranges",
-            [],
+            []
         )
 
         if not isinstance(ranges, list):
@@ -366,14 +400,17 @@ async def fetch_live_ranges(client):
 
             value = normalize_range(value)
 
-            if value and value not in all_ranges:
+            if (
+                value
+                and value not in all_ranges
+            ):
                 all_ranges.append(value)
 
     return all_ranges
 
 
 # =========================================================
-# Telegram API
+# TELEGRAM
 # =========================================================
 
 async def telegram_call(
@@ -415,7 +452,7 @@ async def telegram_call(
 
 
 # =========================================================
-# Telegram Message
+# SEND UPDATE
 # =========================================================
 
 async def send_update(
@@ -451,38 +488,10 @@ async def send_update(
         number
     )
 
-    display_time = format_time(
-        at_ms
-    )
-
-    # -----------------------------------------------------
-    # Find ONLY matching range
-    # -----------------------------------------------------
-
-    matching_ranges = find_matching_ranges(
+    display_range = find_matching_range(
         active_ranges,
         display_number,
     )
-
-    # -----------------------------------------------------
-    # Fallback if liveaccess doesn't have matching range
-    # -----------------------------------------------------
-
-    if not matching_ranges:
-
-        fallback = fallback_range(
-            display_number,
-            prefix_len=8,
-        )
-
-        if fallback:
-            matching_ranges = [
-                fallback
-            ]
-
-    # -----------------------------------------------------
-    # Build message
-    # -----------------------------------------------------
 
     lines = [
         "🟢 New Active Range",
@@ -507,14 +516,10 @@ async def send_update(
             f"📱 Number: `{display_number}`"
         )
 
-    if matching_ranges:
-
-        # Normally only one matching range
-        # should exist for a number.
+    if display_range:
 
         lines.append(
-            f"📊 Range: "
-            f"`{matching_ranges[0]}`"
+            f"📊 Range: `{display_range}`"
         )
 
     if operator:
@@ -528,12 +533,10 @@ async def send_update(
         "📩 Full SMS ⤵️⤵️",
         "🔐 Message content hidden",
         "",
-        f"⏰ Time: {display_time}",
+        f"⏰ Time: {format_time(at_ms)}",
     ])
 
-    text = "\n".join(
-        lines
-    )
+    text = "\n".join(lines)
 
     result = await telegram_call(
         client,
@@ -573,23 +576,23 @@ async def send_update(
         f"message_id={message_id} "
         f"sender={sender!r} "
         f"number={display_number!r} "
-        f"range={matching_ranges[0] if matching_ranges else None!r}"
+        f"range={display_range!r}"
     )
 
 
 # =========================================================
-# Startup Checks
+# STARTUP
 # =========================================================
 
 async def startup_checks(client):
 
     me = await telegram_call(
         client,
-        "getMe",
+        "getMe"
     )
 
     print(
-        "[Telegram] Bot: "
+        f"[Telegram] Bot: "
         f"@{me.get('username')} "
         f"id={me.get('id')}"
     )
@@ -598,12 +601,12 @@ async def startup_checks(client):
         client,
         "getChat",
         {
-            "chat_id": GROUP_ID,
-        },
+            "chat_id": GROUP_ID
+        }
     )
 
     print(
-        "[Telegram] Group: "
+        f"[Telegram] Group: "
         f"id={chat.get('id')} "
         f"type={chat.get('type')} "
         f"title={chat.get('title', '')!r}"
@@ -611,7 +614,7 @@ async def startup_checks(client):
 
 
 # =========================================================
-# Main
+# MAIN
 # =========================================================
 
 async def main():
@@ -686,19 +689,13 @@ async def main():
         limits=limits,
     ) as client:
 
-        # -------------------------------------------------
-        # Telegram checks
-        # -------------------------------------------------
-
         await startup_checks(
             client
         )
 
-        # -------------------------------------------------
-        # Load current active ranges
-        # -------------------------------------------------
-
-        active_ranges = []
+        # -----------------------------------------
+        # Load ranges
+        # -----------------------------------------
 
         try:
 
@@ -720,16 +717,18 @@ async def main():
                 f"{type(exc).__name__}: {exc}"
             )
 
+            active_ranges = []
+
         last_range_refresh = (
             time.monotonic()
         )
 
-        # -------------------------------------------------
-        # IMPORTANT:
+        # -----------------------------------------
+        # Initial rows
         #
-        # First getupdate call contains old rows.
-        # Mark them as seen but DO NOT send them.
-        # -------------------------------------------------
+        # Mark existing rows as seen.
+        # Do NOT send them.
+        # -----------------------------------------
 
         print(
             "[Zebra] Loading existing updates..."
@@ -757,7 +756,7 @@ async def main():
         for row in initial_rows:
 
             signature = (
-                update_signature(row)
+                get_row_identifier(row)
             )
 
             if signature:
@@ -775,17 +774,17 @@ async def main():
             "[Zebra] Waiting for NEW deliveries..."
         )
 
-        # -------------------------------------------------
-        # Main polling loop
-        # -------------------------------------------------
+        # -----------------------------------------
+        # Polling
+        # -----------------------------------------
 
         while True:
 
             try:
 
-                # -----------------------------------------
-                # Refresh active ranges
-                # -----------------------------------------
+                # ---------------------------------
+                # Refresh ranges
+                # ---------------------------------
 
                 now = time.monotonic()
 
@@ -818,9 +817,9 @@ async def main():
                             f"{exc}"
                         )
 
-                # -----------------------------------------
-                # Get updates
-                # -----------------------------------------
+                # ---------------------------------
+                # Fetch updates
+                # ---------------------------------
 
                 rows = await fetch_updates(
                     client
@@ -836,7 +835,7 @@ async def main():
                 for row in rows:
 
                     signature = (
-                        update_signature(row)
+                        get_row_identifier(row)
                     )
 
                     if not signature:
@@ -845,17 +844,28 @@ async def main():
                     if signature in seen_updates:
                         continue
 
+                    # New update found
                     seen_updates.add(
                         signature
+                    )
+
+                    print(
+                        "[NEW UPDATE] "
+                        f"{signature}"
+                    )
+
+                    # Print safe fields once
+                    debug_row_fields(
+                        row
                     )
 
                     new_rows.append(
                         row
                     )
 
-                # -----------------------------------------
-                # Keep memory bounded
-                # -----------------------------------------
+                # ---------------------------------
+                # Memory limit
+                # ---------------------------------
 
                 if len(seen_updates) > MAX_SEEN:
 
@@ -865,9 +875,9 @@ async def main():
                         ]
                     )
 
-                # -----------------------------------------
-                # Send only NEW rows
-                # -----------------------------------------
+                # ---------------------------------
+                # Send new updates
+                # ---------------------------------
 
                 for row in reversed(
                     new_rows
@@ -912,7 +922,7 @@ async def main():
 
 
 # =========================================================
-# Entry Point
+# ENTRY POINT
 # =========================================================
 
 if __name__ == "__main__":
