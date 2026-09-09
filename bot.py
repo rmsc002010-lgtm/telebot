@@ -1,6 +1,8 @@
+```python
 #!/usr/bin/env python3
 
 import asyncio
+import hashlib
 import os
 import time
 from datetime import datetime
@@ -13,11 +15,14 @@ import httpx
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
 GROUP_ID = int(
     os.getenv("GROUP_ID", "-1004415108815").strip()
 )
+
 ZEBRA_MAUTH_TOKEN = os.getenv(
-    "ZEBRA_MAUTH_TOKEN", ""
+    "ZEBRA_MAUTH_TOKEN",
+    ""
 ).strip()
 
 NUMBER_BOT_URL = "https://t.me/testjonson2_bot"
@@ -36,11 +41,31 @@ LIVEACCESS_URL = (
 POLL_SECONDS = 5
 TIMEOUT_SECONDS = 20
 RANGE_REFRESH_SECONDS = 60
+
+# Keep enough signatures in memory
 MAX_SEEN = 5000
 
 
 # =========================================================
-# HELPERS
+# SECURITY
+# =========================================================
+
+# These fields are NEVER inspected, printed, fingerprinted,
+# or sent to Telegram.
+SENSITIVE_FIELDS = {
+    "message",
+    "sms",
+    "text",
+    "body",
+    "content",
+    "code",
+    "otp",
+    "verification_code",
+}
+
+
+# =========================================================
+# BASIC HELPERS
 # =========================================================
 
 def format_time(value):
@@ -51,6 +76,7 @@ def format_time(value):
     try:
         number = float(value)
 
+        # milliseconds -> seconds
         if number > 10_000_000_000:
             number /= 1000
 
@@ -109,26 +135,96 @@ def fallback_range(number):
 
 
 # =========================================================
-# IMPORTANT:
-# NEW UPDATE DETECTION
+# SAFE METADATA
+# =========================================================
+
+def get_safe_metadata(row):
+
+    """
+    Returns only non-sensitive metadata.
+
+    SMS/message/code fields are completely ignored.
+    """
+
+    if not isinstance(row, dict):
+        return {}
+
+    safe = {}
+
+    for key, value in row.items():
+
+        key_lower = str(key).lower()
+
+        if key_lower in SENSITIVE_FIELDS:
+            continue
+
+        safe[key] = value
+
+    return safe
+
+
+def safe_metadata_fingerprint(row):
+
+    """
+    Creates a fingerprint from ALL non-sensitive fields.
+
+    This is stronger than checking only:
+        number + sender + country + operator
+    """
+
+    safe = get_safe_metadata(row)
+
+    if not safe:
+        return None
+
+    parts = []
+
+    for key in sorted(
+        safe.keys(),
+        key=lambda x: str(x).lower()
+    ):
+
+        value = safe[key]
+
+        parts.append(
+            f"{str(key)}={repr(value)}"
+        )
+
+    raw = "|".join(parts)
+
+    digest = hashlib.sha256(
+        raw.encode(
+            "utf-8",
+            errors="replace"
+        )
+    ).hexdigest()
+
+    return f"SAFE|{digest}"
+
+
+# =========================================================
+# UPDATE IDENTIFIER
 # =========================================================
 
 def get_row_identifier(row):
 
     """
-    Create a stable identifier without reading SMS/message.
+    Detect updates without reading SMS content.
 
-    We prefer Zebra's own ID fields.
+    Priority:
 
-    If unavailable, use all available delivery metadata.
+    1. Zebra unique ID
+    2. at_ms
+    3. other timestamp
+    4. complete safe-metadata fingerprint
     """
 
     if not isinstance(row, dict):
         return None
 
-    # -----------------------------------------
-    # Prefer unique API identifiers
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # 1. API supplied unique identifiers
+    # -----------------------------------------------------
 
     for key in (
         "id",
@@ -148,9 +244,9 @@ def get_row_identifier(row):
                 f"ID|{key}|{value}"
             )
 
-    # -----------------------------------------
-    # Timestamp-based identifier
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # 2. Zebra at_ms
+    # -----------------------------------------------------
 
     at_ms = row.get("at_ms")
 
@@ -165,15 +261,17 @@ def get_row_identifier(row):
             str(row.get("operator", "")),
         ])
 
-    # -----------------------------------------
-    # Timestamp alternatives
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # 3. Other possible timestamps
+    # -----------------------------------------------------
 
     for key in (
         "timestamp",
         "created_at",
         "createdAt",
         "time",
+        "date",
+        "datetime",
     ):
 
         value = row.get(key)
@@ -186,51 +284,66 @@ def get_row_identifier(row):
                 str(value),
                 str(row.get("number", "")),
                 str(row.get("sender", "")),
+                str(row.get("country", "")),
+                str(row.get("operator", "")),
             ])
 
-    # -----------------------------------------
-    # Last-resort metadata signature
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # 4. Full safe metadata fingerprint
+    # -----------------------------------------------------
 
-    return "|".join([
-        "META",
-        str(row.get("number", "")),
-        str(row.get("sender", "")),
-        str(row.get("country", "")),
-        str(row.get("operator", "")),
-    ])
+    fingerprint = safe_metadata_fingerprint(
+        row
+    )
+
+    if fingerprint:
+        return fingerprint
+
+    return None
 
 
-def debug_row_fields(row):
+# =========================================================
+# DEBUG
+# =========================================================
+
+def debug_row_fields(row, index=None):
 
     """
-    Print ONLY field names and safe metadata.
-    Never prints message/SMS content.
+    Prints only safe metadata.
+
+    Sensitive SMS/message fields are never printed.
     """
 
     if not isinstance(row, dict):
         return
 
-    safe_fields = {}
+    safe = get_safe_metadata(row)
 
-    for key, value in row.items():
+    prefix = "[DEBUG]"
 
-        if key.lower() in {
-            "message",
-            "sms",
-            "text",
-            "body",
-            "code",
-            "otp",
-        }:
-            continue
-
-        safe_fields[key] = value
+    if index is not None:
+        prefix += f" Row {index}"
 
     print(
-        "[DEBUG] Row metadata:",
-        safe_fields
+        f"{prefix} safe fields:"
     )
+
+    if not safe:
+
+        print(
+            "    <no safe metadata>"
+        )
+
+        return
+
+    for key in sorted(
+        safe.keys(),
+        key=lambda x: str(x).lower()
+    ):
+
+        print(
+            f"    {key}: {safe[key]!r}"
+        )
 
 
 # =========================================================
@@ -261,7 +374,9 @@ def range_matches_number(
     if not prefix:
         return False
 
-    return number.startswith(prefix)
+    return number.startswith(
+        prefix
+    )
 
 
 def find_matching_range(
@@ -273,7 +388,9 @@ def find_matching_range(
 
     for value in active_ranges:
 
-        value = normalize_range(value)
+        value = normalize_range(
+            value
+        )
 
         if not value:
             continue
@@ -286,10 +403,22 @@ def find_matching_range(
             if value not in matches:
                 matches.append(value)
 
+    # Longest prefix is more accurate when
+    # multiple active ranges match.
     if matches:
+
+        matches.sort(
+            key=lambda x: len(
+                x.split("X", 1)[0]
+            ),
+            reverse=True,
+        )
+
         return matches[0]
 
-    return fallback_range(number)
+    return fallback_range(
+        number
+    )
 
 
 # =========================================================
@@ -308,13 +437,22 @@ async def zebra_get(
         headers={
             "MAuth": ZEBRA_MAUTH_TOKEN,
             "Accept": "application/json",
-            "User-Agent": "ZebraSMS-Monitor/1.1",
+            "User-Agent": "ZebraSMS-Monitor/1.2",
         },
     )
 
     response.raise_for_status()
 
     payload = response.json()
+
+    if not isinstance(
+        payload,
+        dict
+    ):
+
+        raise RuntimeError(
+            "Zebra API returned invalid JSON"
+        )
 
     meta = payload.get(
         "meta",
@@ -344,7 +482,10 @@ async def fetch_updates(client):
         {}
     )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return []
 
     rows = data.get(
@@ -352,7 +493,10 @@ async def fetch_updates(client):
         []
     )
 
-    if not isinstance(rows, list):
+    if not isinstance(
+        rows,
+        list
+    ):
         return []
 
     return rows
@@ -370,7 +514,10 @@ async def fetch_live_ranges(client):
         {}
     )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
         return []
 
     rows = data.get(
@@ -378,14 +525,20 @@ async def fetch_live_ranges(client):
         []
     )
 
-    if not isinstance(rows, list):
+    if not isinstance(
+        rows,
+        list
+    ):
         return []
 
     all_ranges = []
 
     for item in rows:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict
+        ):
             continue
 
         ranges = item.get(
@@ -393,18 +546,26 @@ async def fetch_live_ranges(client):
             []
         )
 
-        if not isinstance(ranges, list):
+        if not isinstance(
+            ranges,
+            list
+        ):
             continue
 
         for value in ranges:
 
-            value = normalize_range(value)
+            value = normalize_range(
+                value
+            )
 
             if (
                 value
                 and value not in all_ranges
             ):
-                all_ranges.append(value)
+
+                all_ranges.append(
+                    value
+                )
 
     return all_ranges
 
@@ -448,11 +609,13 @@ async def telegram_call(
             f"{data}"
         )
 
-    return data.get("result")
+    return data.get(
+        "result"
+    )
 
 
 # =========================================================
-# SEND UPDATE
+# SEND TELEGRAM UPDATE
 # =========================================================
 
 async def send_update(
@@ -461,7 +624,10 @@ async def send_update(
     active_ranges,
 ):
 
-    if not isinstance(row, dict):
+    if not isinstance(
+        row,
+        dict
+    ):
         return
 
     sender = row.get(
@@ -536,7 +702,9 @@ async def send_update(
         f"⏰ Time: {format_time(at_ms)}",
     ])
 
-    text = "\n".join(lines)
+    text = "\n".join(
+        lines
+    )
 
     result = await telegram_call(
         client,
@@ -565,7 +733,10 @@ async def send_update(
 
     message_id = None
 
-    if isinstance(result, dict):
+    if isinstance(
+        result,
+        dict
+    ):
 
         message_id = result.get(
             "message_id"
@@ -581,7 +752,7 @@ async def send_update(
 
 
 # =========================================================
-# STARTUP
+# STARTUP CHECKS
 # =========================================================
 
 async def startup_checks(client):
@@ -592,7 +763,7 @@ async def startup_checks(client):
     )
 
     print(
-        f"[Telegram] Bot: "
+        "[Telegram] Bot: "
         f"@{me.get('username')} "
         f"id={me.get('id')}"
     )
@@ -602,11 +773,11 @@ async def startup_checks(client):
         "getChat",
         {
             "chat_id": GROUP_ID
-        }
+        },
     )
 
     print(
-        f"[Telegram] Group: "
+        "[Telegram] Group: "
         f"id={chat.get('id')} "
         f"type={chat.get('type')} "
         f"title={chat.get('title', '')!r}"
@@ -670,6 +841,10 @@ async def main():
         "Message content: NOT READ"
     )
 
+    print(
+        "Safe metadata fingerprint: ENABLED"
+    )
+
     print("=" * 60)
 
     timeout = httpx.Timeout(
@@ -689,13 +864,17 @@ async def main():
         limits=limits,
     ) as client:
 
+        # -------------------------------------------------
+        # Telegram verification
+        # -------------------------------------------------
+
         await startup_checks(
             client
         )
 
-        # -----------------------------------------
-        # Load ranges
-        # -----------------------------------------
+        # -------------------------------------------------
+        # Initial ranges
+        # -------------------------------------------------
 
         try:
 
@@ -723,12 +902,9 @@ async def main():
             time.monotonic()
         )
 
-        # -----------------------------------------
-        # Initial rows
-        #
-        # Mark existing rows as seen.
-        # Do NOT send them.
-        # -----------------------------------------
+        # -------------------------------------------------
+        # Initial update snapshot
+        # -------------------------------------------------
 
         print(
             "[Zebra] Loading existing updates..."
@@ -756,7 +932,9 @@ async def main():
         for row in initial_rows:
 
             signature = (
-                get_row_identifier(row)
+                get_row_identifier(
+                    row
+                )
             )
 
             if signature:
@@ -770,21 +948,54 @@ async def main():
             f"{len(seen_updates)}"
         )
 
+        # -------------------------------------------------
+        # SAFE DIAGNOSTIC
+        # -------------------------------------------------
+
+        print(
+            "[Zebra] Safe metadata diagnostics:"
+        )
+
+        if initial_rows:
+
+            # Only show first 3 rows to keep logs clean.
+            for index, row in enumerate(
+                initial_rows[:3],
+                start=1,
+            ):
+
+                debug_row_fields(
+                    row,
+                    index
+                )
+
+                print(
+                    f"[DEBUG] Row {index} "
+                    f"identifier="
+                    f"{get_row_identifier(row)}"
+                )
+
+        else:
+
+            print(
+                "[DEBUG] No initial rows."
+            )
+
         print(
             "[Zebra] Waiting for NEW deliveries..."
         )
 
-        # -----------------------------------------
-        # Polling
-        # -----------------------------------------
+        # -------------------------------------------------
+        # Poll loop
+        # -------------------------------------------------
 
         while True:
 
             try:
 
-                # ---------------------------------
+                # =========================================
                 # Refresh ranges
-                # ---------------------------------
+                # =========================================
 
                 now = time.monotonic()
 
@@ -817,9 +1028,9 @@ async def main():
                             f"{exc}"
                         )
 
-                # ---------------------------------
+                # =========================================
                 # Fetch updates
-                # ---------------------------------
+                # =========================================
 
                 rows = await fetch_updates(
                     client
@@ -835,7 +1046,9 @@ async def main():
                 for row in rows:
 
                     signature = (
-                        get_row_identifier(row)
+                        get_row_identifier(
+                            row
+                        )
                     )
 
                     if not signature:
@@ -844,17 +1057,22 @@ async def main():
                     if signature in seen_updates:
                         continue
 
-                    # New update found
+                    # -------------------------------------
+                    # New safe-metadata signature detected
+                    # -------------------------------------
+
                     seen_updates.add(
                         signature
                     )
 
                     print(
-                        "[NEW UPDATE] "
-                        f"{signature}"
+                        "[NEW UPDATE]"
                     )
 
-                    # Print safe fields once
+                    print(
+                        f"    identifier={signature}"
+                    )
+
                     debug_row_fields(
                         row
                     )
@@ -863,9 +1081,9 @@ async def main():
                         row
                     )
 
-                # ---------------------------------
-                # Memory limit
-                # ---------------------------------
+                # =========================================
+                # Limit memory
+                # =========================================
 
                 if len(seen_updates) > MAX_SEEN:
 
@@ -875,9 +1093,9 @@ async def main():
                         ]
                     )
 
-                # ---------------------------------
-                # Send new updates
-                # ---------------------------------
+                # =========================================
+                # Send Telegram
+                # =========================================
 
                 for row in reversed(
                     new_rows
@@ -906,6 +1124,14 @@ async def main():
                     f"status="
                     f"{exc.response.status_code} "
                     f"url={exc.request.url}"
+                )
+
+            except httpx.RequestError as exc:
+
+                print(
+                    "[NETWORK ERROR] "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
             except Exception as exc:
@@ -938,3 +1164,4 @@ if __name__ == "__main__":
         print(
             "Stopped."
         )
+```
