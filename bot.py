@@ -73,27 +73,39 @@ class CborDecodeError(Exception):
     pass
 
 
+_CBOR_BREAK = object()
+
+
 def cbor_uint(data: bytes, pos: int, additional: int):
+    """Read a CBOR unsigned integer/length argument."""
     if additional < 24:
         return additional, pos
-
     nbytes = {24: 1, 25: 2, 26: 4, 27: 8}.get(additional)
     if nbytes is None:
-        raise CborDecodeError("Unsupported CBOR integer width")
-
+        raise CborDecodeError(
+            f"Unsupported CBOR integer width additional={additional}"
+        )
     end = pos + nbytes
     if end > len(data):
         raise CborDecodeError("Truncated CBOR integer")
-
     return int.from_bytes(data[pos:end], "big"), end
 
 
 def decode_cbor(data: bytes, pos: int = 0):
+    """Small but robust CBOR decoder for the Console response.
+
+    Supports definite/indefinite arrays, maps, byte/text strings, tags,
+    booleans/null, and the common float widths. 0xff is the CBOR break code.
+    """
     if pos >= len(data):
         raise CborDecodeError("Unexpected end of CBOR")
 
     initial = data[pos]
     pos += 1
+
+    # Break marker is only valid while decoding an indefinite container.
+    if initial == 0xFF:
+        return _CBOR_BREAK, pos
 
     major = initial >> 5
     additional = initial & 31
@@ -103,42 +115,92 @@ def decode_cbor(data: bytes, pos: int = 0):
         return (value if major == 0 else -1 - value), pos
 
     if major in (2, 3):
+        if additional == 31:
+            # Indefinite-length byte/text string: concatenate chunks.
+            chunks = []
+            while True:
+                if pos >= len(data):
+                    raise CborDecodeError("Truncated indefinite string")
+                if data[pos] == 0xFF:
+                    pos += 1
+                    break
+                chunk, pos = decode_cbor(data, pos)
+                if major == 2 and not isinstance(chunk, (bytes, bytearray)):
+                    raise CborDecodeError("Invalid byte-string chunk")
+                if major == 3 and not isinstance(chunk, str):
+                    raise CborDecodeError("Invalid text-string chunk")
+                chunks.append(chunk)
+            if major == 2:
+                return b"".join(bytes(x) for x in chunks), pos
+            return "".join(chunks), pos
+
         length, pos = cbor_uint(data, pos, additional)
-        if pos + length > len(data):
+        end = pos + length
+        if end > len(data):
             raise CborDecodeError("Truncated CBOR string")
-
-        raw = data[pos:pos + length]
-        pos += length
-
+        raw = data[pos:end]
+        pos = end
         if major == 2:
             return raw, pos
-
         return raw.decode("utf-8", errors="replace"), pos
 
     if major == 4:
-        length, pos = cbor_uint(data, pos, additional)
         result = []
+        if additional == 31:
+            while True:
+                if pos >= len(data):
+                    raise CborDecodeError("Truncated indefinite array")
+                if data[pos] == 0xFF:
+                    pos += 1
+                    break
+                value, pos = decode_cbor(data, pos)
+                if value is _CBOR_BREAK:
+                    break
+                result.append(value)
+            return result, pos
 
+        length, pos = cbor_uint(data, pos, additional)
         for _ in range(length):
             value, pos = decode_cbor(data, pos)
             result.append(value)
-
         return result, pos
 
     if major == 5:
-        length, pos = cbor_uint(data, pos, additional)
         result = {}
+        if additional == 31:
+            while True:
+                if pos >= len(data):
+                    raise CborDecodeError("Truncated indefinite map")
+                if data[pos] == 0xFF:
+                    pos += 1
+                    break
+                key, pos = decode_cbor(data, pos)
+                if key is _CBOR_BREAK:
+                    break
+                value, pos = decode_cbor(data, pos)
+                if value is _CBOR_BREAK:
+                    raise CborDecodeError("Unexpected map break")
+                if isinstance(key, bytes):
+                    key = key.decode("utf-8", errors="replace")
+                result[key] = value
+            return result, pos
 
+        length, pos = cbor_uint(data, pos, additional)
         for _ in range(length):
             key, pos = decode_cbor(data, pos)
             value, pos = decode_cbor(data, pos)
-
+            if key is _CBOR_BREAK or value is _CBOR_BREAK:
+                raise CborDecodeError("Unexpected map break")
             if isinstance(key, bytes):
                 key = key.decode("utf-8", errors="replace")
-
             result[key] = value
-
         return result, pos
+
+    if major == 6:
+        # Semantic tags are not needed by the monitor; decode and return the
+        # tagged value so the application can continue normally.
+        _, pos = cbor_uint(data, pos, additional)
+        return decode_cbor(data, pos)
 
     if major == 7:
         if additional == 20:
@@ -147,11 +209,35 @@ def decode_cbor(data: bytes, pos: int = 0):
             return True, pos
         if additional in (22, 23):
             return None, pos
-
+        if additional == 24:
+            if pos >= len(data):
+                raise CborDecodeError("Truncated CBOR simple value")
+            return data[pos], pos + 1
+        if additional == 25:
+            end = pos + 2
+            if end > len(data):
+                raise CborDecodeError("Truncated CBOR float16")
+            # Python struct has no portable half-float format; decode it.
+            bits = int.from_bytes(data[pos:end], "big")
+            sign = -1.0 if bits & 0x8000 else 1.0
+            exp = (bits >> 10) & 0x1F
+            frac = bits & 0x03FF
+            if exp == 0:
+                value = sign * (frac / 1024.0) * (2 ** -14)
+            elif exp == 31:
+                value = float("nan") if frac else sign * float("inf")
+            else:
+                value = sign * (1.0 + frac / 1024.0) * (2 ** (exp - 15))
+            return value, end
+        if additional == 26:
+            end = pos + 4
+            if end > len(data):
+                raise CborDecodeError("Truncated CBOR float32")
+            return struct.unpack(">f", data[pos:end])[0], end
         if additional == 27:
             end = pos + 8
             if end > len(data):
-                raise CborDecodeError("Truncated CBOR float")
+                raise CborDecodeError("Truncated CBOR float64")
             return struct.unpack(">d", data[pos:end])[0], end
 
     raise CborDecodeError(
